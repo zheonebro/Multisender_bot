@@ -9,16 +9,11 @@ import logging
 
 from dotenv import load_dotenv
 from rich.console import Console
-from rich.prompt import Prompt
-from rich.table import Table
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from rich.align import Align
 from rich.logging import RichHandler
-from rich.layout import Layout
 from rich.live import Live
-from rich.text import Text
-from rich import box
 import web3
 import schedule
 from web3.exceptions import TransactionNotFound
@@ -36,7 +31,7 @@ BANNER = """
 ███████╗██║  ██║╚██████╔╝╚██████╔╝██║     ╚██████╔╝██║ ╚████║
 ╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝      ╚═════╝ ╚═╝  ╚═══╝
 """
-console.print(Panel.fit(BANNER, title="[bold green]🚀 ERC20 Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
+console.print(Panel.fit(BANNER, title="[bold green]🚀 ERC20 Sender Bot[/bold green]", border_style="cyan"))
 
 # Setup logging
 log_dir = "runtime_logs"
@@ -170,7 +165,7 @@ def log_balances():
     except Exception as e:
         logger.error(f"[red]Gagal membaca balance: {e}[/red]")
 
-# Fungsi tampilkan log online berjalan
+# Fungsi tampilkan log online berjalan tanpa tabel
 
 def show_log_live():
     log_file = os.path.join("runtime_logs", "runtime.log")
@@ -183,18 +178,14 @@ def show_log_live():
             while True:
                 with open(log_file, "r", encoding="utf-8") as f:
                     lines = f.readlines()[-20:]
-                table = Table(title="📜 Log Runtime Berjalan", show_header=True, header_style="bold cyan")
-                table.add_column("Waktu", style="dim")
-                table.add_column("Pesan")
+                console.clear()
                 for line in lines:
                     try:
                         timestamp, msg = line.strip().split(" ", 1)
-                        table.add_row(timestamp, msg)
+                        console.print(f"[dim]{timestamp}[/dim] {msg}")
                     except:
                         continue
-                console.print(table)
                 time.sleep(3)
-                console.clear()
         except KeyboardInterrupt:
             return
 
