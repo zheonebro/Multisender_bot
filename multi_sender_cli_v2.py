@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 import threading
 import logging
+import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from rich.console import Console
@@ -27,7 +28,7 @@ BANNER = """
 ███████╗██║  ██║╚██████╔╝╚██████╔╝██║     ╚██████╔╝██║ ╚████║
 ╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝      ╚═════╝ ╚═╝  ╚═══╝
 """
-console.print(Panel.fit(BANNER, title="[bold green]🚀 ERC20 Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
+console.print(Panel.fit(BANNER, title="[bold green]🚀 TEA SEPOLIA TESNET Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
 
 # Setup logging
 log_dir = "runtime_logs"
@@ -230,17 +231,76 @@ def process_batch(addresses_batch, batch_id):
 def run_sending():
     logger.info("💡 Starting sender bot...")
     log_balances()
-    total = len(wallets_all)
+    wallets = load_wallets(CSV_FILE)
+    total = len(wallets)
     if total == 0:
         logger.info("🚫 Tidak ada wallet yang akan dikirimi.")
         return
 
-    batches = [wallets_all[i:i+BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
+    batches = [wallets[i:i+BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
 
     with ThreadPoolExecutor(max_workers=THREAD_WORKERS) as executor:
         for idx, batch in enumerate(batches):
             executor.submit(process_batch, batch, idx+1)
-            time.sleep(IDLE_AFTER_BATCH_SECONDS)
+            logger.info(f"🛌 Menunggu selama {IDLE_AFTER_BATCH_SECONDS} detik sebelum batch berikutnya...")
+            for remaining in range(IDLE_AFTER_BATCH_SECONDS, 0, -1):
+                logger.info(f"⏸ Idle... {remaining} detik tersisa")
+                time.sleep(1)
+
+# CLI
+
+def interactive_menu():
+    global MIN_TOKEN, MAX_TOKEN
+    while True:
+        console.print("\n[bold yellow]Menu:[/bold yellow]", style="bold cyan")
+        console.print("[1] Mulai kirim token sekarang")
+        console.print(f"[2] Atur rentang jumlah token (sekarang: {MIN_TOKEN}-{MAX_TOKEN})")
+        console.print("[3] Jadwalkan pengiriman harian otomatis")
+        console.print("[4] Uji coba kirim ke beberapa address random")
+        console.print("[5] Keluar")
+
+        choice = input(">>> Pilih opsi: ").strip()
+
+        if choice == "1":
+            run_sending()
+        elif choice == "2":
+            try:
+                min_val = input("Masukkan jumlah token minimum [default 5]: ") or "5"
+                max_val = input("Masukkan jumlah token maksimum [default 50]: ") or "50"
+                MIN_TOKEN = max(1, int(min_val))
+                MAX_TOKEN = max(MIN_TOKEN, int(max_val))
+                logger.info(f"Rentang token diatur: {MIN_TOKEN}-{MAX_TOKEN}")
+            except ValueError:
+                logger.error("Input tidak valid. Harus berupa angka.")
+        elif choice == "3":
+            waktu = input("Masukkan waktu pengiriman harian (24 jam, contoh 14:00): ").strip()
+            schedule.every().day.at(waktu).do(run_sending)
+            logger.info(f"✅ Pengiriman otomatis dijadwalkan setiap hari jam {waktu}")
+            while True:
+                schedule.run_pending()
+                time.sleep(1)
+        elif choice == "4":
+            test_addresses = random.sample(wallets_all, min(5, len(wallets_all)))
+            logger.info("🔁 Test kirim token ke beberapa address acak:")
+            for addr in test_addresses:
+                logger.info(f"- {addr}")
+        elif choice == "5":
+            logger.info("👋 Keluar dari program.")
+            break
+        else:
+            logger.warning("Opsi tidak dikenal. Coba lagi.")
 
 if __name__ == "__main__":
-    run_sending()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--auto", action="store_true", help="Mode otomatis berjalan terus dengan delay antar batch")
+    args = parser.parse_args()
+
+    if args.auto:
+        logger.info("[AUTO MODE] Bot akan terus mengirim batch secara otomatis.")
+        schedule.every(IDLE_AFTER_BATCH_SECONDS).seconds.do(run_sending)
+        run_sending()
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
+    else:
+        interactive_menu()
