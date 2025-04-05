@@ -1,124 +1,130 @@
-# Multisender_bot
-
-1. Pengiriman token ke banyak address (dari file CSV)
-  
-2. Validasi & konversi checksum otomatis
-
-3. Pengiriman langsung atau terjadwal harian
-
-4. Tampilan CLI interaktif (dengan rich)
-
-5. Estimasi token yang dibutuhkan
-
-6. Logging transaksi & error
 
 
 
-sebelum memulai buat screen terlebih dahulu dengan perintah 
-
-screen -S Namafile
-
-Contoh :
-```screen -S multisender```
-
-
-
-⚙️ 1. Clone Repository & Install Library
-# 1. Update & install git + pip
-```sudo apt update && sudo apt install -y git python3-pip```
-
-# 2. Clone repository
-```git clone https://github.com/zheonebro/Multisender_bot.git```
-
-```cd multisender-bot```
-
-# 3. Install library yang dibutuhkan
-```pip3 install -r requirements.txt```
+***
 
 
 
 
-====================================================================================
+# 🔁 ERC20 Token Multisender Bot
 
+Bot Python untuk mengirim token ERC20 ke banyak wallet sekaligus menggunakan file `.csv`.
 
+## 📦 Fitur
 
-Agar program PIP3 tidak bentrok dengan yang lain lakukan perintah berikut :
-# I. Pastikan pip & venv tersedia
-```sudo apt install python3-pip python3-venv -y```
+- Konversi otomatis alamat wallet ke format checksum
+- Pengiriman token dalam rentang jumlah acak
+- Pengiriman langsung atau terjadwal
+- Logging transaksi otomatis
+- Tampilan CLI interaktif menggunakan `rich`
 
-# II. Buat virtual environment
-```python3 -m venv venv```
+---
 
-# III. Aktifkan venv
-```source venv/bin/activate```
+## 🪰 Persyaratan VPS
 
-Setelah ini, prompt kamu akan berubah jadi seperti ini:
+- Ubuntu 20.04+ (rekomendasi)
+- Python 3.8+
+- Internet aktif
+- Akses ke file `.env` berisi konfigurasi pribadi (private key, token contract, dll)
 
-(venv) user@vps:~/multisender-bot$
+---
 
+## 🛠️ Langkah Instalasi
 
-=====================================================================================
+### 1. 🔄 Update sistem & install dependensi
 
-
-
-2. Konfigurasi .env
-Buat file .env di dalam folder project:
-
-```nano .env```
-
-Isi dengan:
-
+```bash
+sudo apt update && sudo apt install -y python3 python3-pip python3-venv git
 ```
+
+### 2. 📁 Clone repository
+
+```bash
+git clone https://github.com/zheonebro/Multisender_bot.git
+cd erc20-multisender
+```
+
+
+
+### 3. 🧪 Buat virtual environment dan aktifkan
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 4. 📦 Install library yang dibutuhkan
+
+```bash
+pip install -r requirements.txt
+```
+
+> Pastikan `requirements.txt` berisi:  
+> `web3`, `python-dotenv`, `schedule`, `rich`
+
+### 5. ⚙️ Konfigurasi file `.env`
+
+Buat file `.env` di folder utama dan isi dengan:
+
+```env
 PRIVATE_KEY=0xPRIVATEKEYANDA
-
 SENDER_ADDRESS=0xAlamatWalletAnda
-
 INFURA_URL=https://mainnet.infura.io/v3/YOUR-PROJECT-ID
-
 TOKEN_CONTRACT=0xTokenContractAddress
 ```
 
+> ***untuk infura URL tea sepolia tesnet gunakan RPC dibawah ini***
+
+```
+https://tea-sepolia.g.alchemy.com/v2/yN8jExL8zpeSAT-d20KX1obM239S83Lc
+```
 
 
-#untuk infura URL tea sepolia tesnet gunakan RPC dibawah ini#
+### 6. 📁 Siapkan file wallet `.csv`
 
-```https://tea-sepolia.g.alchemy.com/v2/yN8jExL8zpeSAT-d20KX1obM239S83Lc```
+Buat file `wallets.csv` dengan format seperti ini:
 
-Note : ⚠️ Jangan pernah upload file .env ke publik!
-
-
-
-
-3. Siapkan File Wallets
-Buat file wallets.csv berisi address tujuan. 
-
-```nano wallets.csv```
-
-
-Contoh isi:
+```csv
 address
-0x1234567890abcdef1234567890abcdef12345678
-0xabcdefabcdefabcdefabcdefabcdefabcdefabcd
+0xAbcd1234...
+0xEfgh5678...
+...
+```
 
-Script akan otomatis mengubah jadi checksum dan simpan ke wallets_checksummed.csv
+> Baris pertama harus `address` (header)
+
+---
+
+## 🚀 Menjalankan Bot
+
+### Jalankan script utama
+
+```bash
+python3 main.py
+```
+
+Ikuti instruksi interaktif untuk:
+
+- Menentukan jumlah token minimum & maksimum
+- Memilih mode: langsung / terjadwal
+
+---
+
+## 📝 Log & Output
+
+- Semua transaksi berhasil/gagal dicatat di file `logs.txt`
+- Alamat valid dikonversi otomatis ke `wallets_checksummed.csv`
+- Transaksi ditampilkan di terminal dan bisa diklik langsung ke Etherscan
+
+---
+
+## 🧽 Tips Tambahan
+
+- Gunakan VPS dengan resource cukup untuk pengiriman skala besar.
+- Jangan kirim lebih banyak token dari saldo Anda 😅.
+- Periksa gas fee sebelum mengirim batch besar.
+
+---
 
 
-
-
-4. Jalankan Script
-
-```python main.py```
-
-Ikuti petunjuk di layar:
-
-Masukkan jumlah MIN & MAX token
-( Default Min 5 , Max 20), kosongkan jika ingin menggunakan jumlah default
-
-Pilih mode pengiriman:
-
-1 = Sekali langsung
-
-2 = Sekali langsung + harian ( pada saat running pertama akan melakukan pengiriman token ,setelah selesai akan berjalan sesuai jadwal yang dibuat setiap harinya 
-
-3 = Hanya pengiriman harian
 
