@@ -9,11 +9,13 @@ import logging
 
 from dotenv import load_dotenv
 from rich.console import Console
-from rich.panel import Panel
+from rich.prompt import Prompt
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
-from rich.align import Align
 from rich.logging import RichHandler
+from rich.layout import Layout
 from rich.live import Live
+from rich.text import Text
+from rich import box
 import web3
 import schedule
 from web3.exceptions import TransactionNotFound
@@ -31,7 +33,7 @@ BANNER = """
 ███████╗██║  ██║╚██████╔╝╚██████╔╝██║     ╚██████╔╝██║ ╚████║
 ╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝      ╚═════╝ ╚═╝  ╚═══╝
 """
-console.print(Panel.fit(BANNER, title="[bold green]🚀 ERC20 Sender Bot[/bold green]", border_style="cyan"))
+console.print(Panel.fit(BANNER, title="[bold green]🚀 ERC20 Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
 
 # Setup logging
 log_dir = "runtime_logs"
@@ -159,54 +161,22 @@ def log_balances():
         estimated_gas_per_tx = 50000
         estimated_tx_possible = int(eth_balance_wei / (estimated_gas_per_tx * gas_price))
 
-        logger.info(f"[bold green]📊 Token balance:[/bold green] {token_balance:.4f} {TOKEN_NAME}")
-        logger.info(f"[bold yellow]⛽ TEA balance (untuk gas):[/bold yellow] {eth_balance:.6f} TEA")
-        logger.info(f"[cyan]🔗 Estimasi TX sisa:[/cyan] {estimated_tx_possible} transaksi")
+        logger.info(f"[blue]📊 Token balance: {token_balance:.4f} {TOKEN_NAME}[/blue]")
+        logger.info(f"[cyan]⛽ TEA balance (untuk gas): {eth_balance:.6f} TEA[/cyan]")
+        logger.info(f"[green]🔗 Estimasi TX sisa: {estimated_tx_possible} transaksi[/green]")
     except Exception as e:
-        logger.error(f"[red]❌ Gagal membaca balance: {e}[/red]")
+        logger.error(f"[red]Gagal membaca balance: {e}[/red]")
 
-# Fungsi tampilkan log online berjalan tanpa tabel, dengan format lebih menarik
-
-def show_log_live():
-    log_file = os.path.join("runtime_logs", "runtime.log")
-    if not os.path.exists(log_file):
-        console.print("[red]Log file tidak ditemukan.[/red]")
-        return
-
-    with Live(console=console, refresh_per_second=1):
-        try:
-            while True:
-                with open(log_file, "r", encoding="utf-8") as f:
-                    lines = f.readlines()[-20:]
-                console.clear()
-                for line in lines:
-                    try:
-                        timestamp, msg = line.strip().split(" ", 1)
-                        # Format log dengan warna dan emoji untuk meningkatkan daya tarik
-                        if "✅" in msg:
-                            console.print(f"[green]{timestamp}[/green] [bold green]✅ {msg}[/bold green]")
-                        elif "⚠️" in msg:
-                            console.print(f"[yellow]{timestamp}[/yellow] [bold yellow]⚠️ {msg}[/bold yellow]")
-                        elif "❌" in msg:
-                            console.print(f"[red]{timestamp}[/red] [bold red]❌ {msg}[/bold red]")
-                        else:
-                            console.print(f"[dim]{timestamp}[/dim] {msg}")
-                    except:
-                        continue
-                time.sleep(3)
-        except KeyboardInterrupt:
-            return
-
-# Fungsi check RPC limit
+# Fungsi untuk cek RPC Limit
 
 def check_rpc_limit():
     try:
-        w3.eth.get_block('latest')
-        return True
-    except web3.exceptions.BlockNotFound:
-        logger.warning("⚠️ Terkena limit RPC, menunggu 60 detik...")
-        time.sleep(60)
-        return False
+        latest_block = w3.eth.get_block('latest')  # Cek block terakhir
+        logger.info(f"[yellow]🔄 RPC Limit Check: Block terakhir: {latest_block['number']}[/yellow]")
+        return False  # Tidak ada limit tercapai, lanjutkan
+    except web3.exceptions.Web3Exception as e:
+        logger.warning(f"[red]❌ RPC Limit tercapai: {e}[/red]")
+        return True  # RPC limit tercapai
 
 # Fungsi kirim token acak dengan adaptive delay
 
@@ -220,44 +190,38 @@ def send_tokens():
     logger.info(f"🚀 Mulai pengiriman batch ke {total} wallet...")
 
     for i, to_address in enumerate(wallets_all):
+        if check_rpc_limit():  # Mengecek RPC limit sebelum pengiriman
+            logger.info("[yellow]⏳ Menunggu karena RPC limit tercapai...[/yellow]")
+            time.sleep(60)  # Tunggu selama 60 detik sebelum melanjutkan pengiriman
+
         try:
-            # Generate token amount between 10 and 100
-            amount = random.randint(10, 100) * (10 ** decimals)
+            amount = random.randint(10, 100) * (10 ** decimals)  # Nominal acak antara 10 dan 100 token
             nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
-
-            # Check RPC limit before proceeding
-            if not check_rpc_limit():
-                continue
-
             tx = token_contract.functions.transfer(to_address, amount).build_transaction({
                 'from': SENDER_ADDRESS,
+                'gas': 200000,  # Sesuaikan dengan gas limit yang cukup
+                'gasPrice': w3.eth.gas_price,
                 'nonce': nonce,
-                'gas': 60000,
-                'gasPrice': w3.eth.gas_price
             })
-            signed = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-            tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
-            logger.info(f"✅ Tx terkirim ke {to_address} | Hash: {tx_hash.hex()}")
-            time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
+
+            signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+
+            logger.info(f"[green]✅ Sent {amount / (10 ** decimals):.4f} {TOKEN_NAME} to {to_address} | Hash: {tx_hash.hex()}[/green]")
+
+            time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))  # Delay acak
+
         except Exception as e:
-            if "too many requests" in str(e).lower():
-                logger.warning("⚠️ Terkena limit RPC. Menunggu 60 detik...")
-                time.sleep(60)
-            else:
-                logger.error(f"❌ Gagal kirim ke {to_address}: {e}")
+            logger.error(f"[red]❌ Failed to send to {to_address}: {e}[/red]")
 
-# Penjadwalan pengiriman token setiap jam
+# Fungsi utama bot
 
-def start_scheduler():
-    schedule.every().hour.do(send_tokens)
-    logger.info("⏰ Penjadwalan pengiriman token setiap jam telah dimulai.")
+def main():
+    schedule.every(1).hour.do(send_tokens)
     while True:
         schedule.run_pending()
         time.sleep(1)
 
-# Main function
-
 if __name__ == "__main__":
-    log_balances()
-    threading.Thread(target=start_scheduler, daemon=True).start()
-    show_log_live()
+    log_balances()  # Tampilkan saldo
+    main()
