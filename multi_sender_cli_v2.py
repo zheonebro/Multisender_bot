@@ -229,4 +229,35 @@ def send_tokens():
             
             time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
         except Exception as e:
-            if "too many
+            if "too many requests" in str(e).lower():
+                logger.warning("⚠️ Terkena limit RPC. Menunggu 60 detik...")
+                time.sleep(60)
+            else:
+                logger.error(f"❌ Gagal kirim ke {to_address}: {e}")
+
+# Reset daily_sent_total setiap hari pada jam 00:00
+def reset_daily_limit():
+    global daily_sent_total
+    schedule.every().day.at("00:00").do(lambda: (daily_sent_total := 0.0))
+    logger.info("⏰ Reset limit harian dimulai setiap jam 00:00")
+
+# Penjadwalan pengiriman token setiap jam
+
+def start_scheduler():
+    schedule.every().hour.do(send_tokens)
+    reset_daily_limit()
+    logger.info("⏰ Penjadwalan pengiriman token setiap jam telah dimulai.")
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+# Menu interaktif (opsional manual)
+
+def interactive_menu():
+    log_balances()
+    threading.Thread(target=start_scheduler, daemon=True).start()
+    console.print("[cyan]Bot aktif. Pengiriman otomatis dijadwalkan setiap jam.[/cyan]")
+    show_log_live()
+
+if __name__ == "__main__":
+    interactive_menu()
