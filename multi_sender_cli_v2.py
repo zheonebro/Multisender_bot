@@ -280,10 +280,32 @@ def interactive_menu():
                 schedule.run_pending()
                 time.sleep(1)
         elif choice == "4":
-            test_addresses = random.sample(wallets_all, min(5, len(wallets_all)))
-            logger.info("🔁 Test kirim token ke beberapa address acak:")
-            for addr in test_addresses:
-                logger.info(f"- {addr}")
+            test_addresses = load_wallets(CSV_FILE)
+            if not test_addresses:
+                logger.warning("Tidak ada address yang tersedia untuk uji coba.")
+            else:
+                sample_addresses = random.sample(test_addresses, min(5, len(test_addresses)))
+                logger.info("🔁 Test kirim token ke beberapa address acak:")
+                for addr in sample_addresses:
+                    logger.info(f"- {addr}")
+
+                for addr in sample_addresses:
+                    try:
+                        token_amount = random.randint(MIN_TOKEN, MAX_TOKEN)
+                        amount = token_amount * (10 ** decimals)
+                        nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
+                        tx = token_contract.functions.transfer(addr, amount).build_transaction({
+                            'from': SENDER_ADDRESS,
+                            'nonce': nonce,
+                            'gas': 60000,
+                            'gasPrice': min(w3.eth.gas_price, w3.to_wei(MAX_GAS_PRICE_GWEI, 'gwei'))
+                        })
+                        signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+                        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+                        logger.info(f"✅ [Test TX] Kirim {token_amount} {TOKEN_NAME} ke {addr} → TX: {tx_hash.hex()}")
+                    except Exception as e:
+                        logger.error(f"❌ Gagal mengirim token uji ke {addr}: {e}")
+
         elif choice == "5":
             logger.info("👋 Keluar dari program.")
             break
