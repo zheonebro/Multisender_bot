@@ -27,7 +27,7 @@ BANNER = """
 ███████╗██║  ██║╚██████╔╝╚██████╔╝██║     ╚██████╔╝██║ ╚████║
 ╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝      ╚═════╝ ╚═╝  ╚═══╝
 """
-console.print(Panel.fit(BANNER, title="[bold green]🚀 TEA SEPOLIA TESNET Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
+console.print(Panel.fit(BANNER, title="[bold green]🚀 ERC20 Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
 
 # Setup logging
 log_dir = "runtime_logs"
@@ -224,3 +224,23 @@ def process_batch(addresses_batch, batch_id):
             logger.error(f"[BATCH {batch_id}] ❌ Failed to send to {to_address}: {e}")
 
         time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
+
+# Main runner
+
+def run_sending():
+    logger.info("💡 Starting sender bot...")
+    log_balances()
+    total = len(wallets_all)
+    if total == 0:
+        logger.info("🚫 Tidak ada wallet yang akan dikirimi.")
+        return
+
+    batches = [wallets_all[i:i+BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
+
+    with ThreadPoolExecutor(max_workers=THREAD_WORKERS) as executor:
+        for idx, batch in enumerate(batches):
+            executor.submit(process_batch, batch, idx+1)
+            time.sleep(IDLE_AFTER_BATCH_SECONDS)
+
+if __name__ == "__main__":
+    run_sending()
