@@ -1,44 +1,45 @@
 # Multisender_bot
-#Fitur#
+
 1. Pengiriman token ke banyak address (dari file CSV)
 2. Validasi & konversi checksum otomatis
 3. Pengiriman langsung atau terjadwal harian
 4.Tampilan CLI interaktif (dengan rich)
 5.Estimasi token yang dibutuhkan
+6. Logging transaksi & error
 
-Logging transaksi & error
+
 
 sebelum memulai buat screen terlebih dahulu dengan perintah 
 
-Screen -S Namafile
+screen -S Namafile
 
 Contoh :
-[screen -S multisender]
+```screen -S multisender```
 
 
 
 ⚙️ 1. Clone Repository & Install Library
 # 1. Update & install git + pip
-sudo apt update && sudo apt install -y git python3-pip
+```sudo apt update && sudo apt install -y git python3-pip```
 
 # 2. Clone repository (ganti URL jika pakai Git pribadi)
-[git clone https://github.com/zheonebro/Multisender_bot.git]
+```git clone https://github.com/zheonebro/Multisender_bot.git```
 
-[cd multisender-bot]
+```cd multisender-bot```
 
 # 3. Install library yang dibutuhkan
-[pip3 install -r requirements.txt]
+```pip3 install -r requirements.txt```
 
 ============================================================================================================================
 Agar program PIP3 tidak bentrok dengan yang lain lakukan perintah berikut :
 # I. Pastikan pip & venv tersedia
-[sudo apt install python3-pip python3-venv -y]
+```sudo apt install python3-pip python3-venv -y```
 
 # II. Buat virtual environment
-[python3 -m venv venv
+```python3 -m venv venv```
 
 # III. Aktifkan venv
-source venv/bin/activate
+```source venv/bin/activate```
 
 Setelah ini, prompt kamu akan berubah jadi seperti ini:
 
@@ -51,21 +52,21 @@ Setelah ini, prompt kamu akan berubah jadi seperti ini:
 2. Konfigurasi .env
 Buat file .env di dalam folder project:
 
-[nano .env]
+```nano .env```
 
 Isi dengan:
 
-[PRIVATE_KEY=0xyourprivatekey
+```PRIVATE_KEY=0xyourprivatekey
 SENDER_ADDRESS=0xYourWalletAddress
 INFURA_URL=https://mainnet.infura.io/v3/YOUR_PROJECT_ID
-TOKEN_CONTRACT=0xTokenContractAddress]
+TOKEN_CONTRACT=0xTokenContractAddress```
 
 Note : ⚠️ Jangan pernah upload file .env ke publik!
 
 3. Siapkan File Wallets
 Buat file wallets.csv berisi address tujuan. 
 
-[nano wallets.csv]
+```nano wallets.csv```
 
 Contoh isi:
 address
@@ -76,7 +77,7 @@ Script akan otomatis mengubah jadi checksum dan simpan ke wallets_checksummed.cs
 
 4. Jalankan Script
 
-[python main.py]
+```python main.py```
 
 Ikuti petunjuk di layar:
 
