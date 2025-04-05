@@ -7,19 +7,21 @@ import traceback
 import threading
 import logging
 
-
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.prompt import Prompt
+from rich.table import Table
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+from rich.align import Align
 from rich.logging import RichHandler
 from rich.layout import Layout
 from rich.live import Live
-from rich.table import Table
 from rich.text import Text
-from rich import box  # Pastikan ini ada di bagian impor
+from rich import box
 import web3
 import schedule
+from web3.exceptions import TransactionNotFound
 
 # Init
 console = Console()
@@ -128,7 +130,12 @@ token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
 decimals = token_contract.functions.decimals().call()
 TOKEN_NAME = token_contract.functions.name().call()
 
+nonce_lock = threading.Lock()
+daily_sent_total = 0.0
+daily_lock = threading.Lock()
+
 # Fungsi load wallet
+
 def load_wallets(csv_file):
     valid_addresses = []
     with open(csv_file, newline='') as f:
@@ -143,16 +150,67 @@ def load_wallets(csv_file):
 
 wallets_all = load_wallets(CSV_FILE)
 
-# Fungsi cek limit RPC dan tunda jika terdeteksi
+# Fungsi monitoring balance dan TEA (ETH) untuk gas
+
+def log_balances():
+    try:
+        token_balance_raw = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
+        token_balance = token_balance_raw / (10 ** decimals)
+
+        eth_balance_wei = w3.eth.get_balance(SENDER_ADDRESS)
+        eth_balance = w3.from_wei(eth_balance_wei, 'ether')
+
+        gas_price = w3.eth.gas_price
+        estimated_gas_per_tx = 50000
+        estimated_tx_possible = int(eth_balance_wei / (estimated_gas_per_tx * gas_price))
+
+        logger.info(f"📊 [bold]Token balance:[/bold] {token_balance:.4f} {TOKEN_NAME}")
+        logger.info(f"⛽ [bold]TEA balance (untuk gas):[/bold] {eth_balance:.6f} TEA")
+        logger.info(f"🔗 [bold]Estimasi TX sisa:[/bold] {estimated_tx_possible} transaksi")
+    except Exception as e:
+        logger.error(f"[red]Gagal membaca balance: {e}[/red]")
+
+# Fungsi tampilkan log online berjalan
+
+def show_log_live():
+    log_file = os.path.join("runtime_logs", "runtime.log")
+    if not os.path.exists(log_file):
+        console.print("[red]Log file tidak ditemukan.[/red]")
+        return
+
+    with Live(console=console, refresh_per_second=1):
+        try:
+            while True:
+                with open(log_file, "r", encoding="utf-8") as f:
+                    lines = f.readlines()[-20:]
+                table = Table(title="📜 Log Runtime Berjalan", show_header=True, header_style="bold cyan")
+                table.add_column("Waktu", style="dim")
+                table.add_column("Pesan")
+                for line in lines:
+                    try:
+                        timestamp, msg = line.strip().split(" ", 1)
+                        table.add_row(timestamp, msg)
+                    except:
+                        continue
+                console.print(table)
+                time.sleep(3)
+                console.clear()
+        except KeyboardInterrupt:
+            return
+
+# Fungsi check RPC limit
+
 def check_rpc_limit():
     try:
         w3.eth.get_block('latest')
-    except web3.exceptions.ConnectionError:
-        logger.warning("⚠️ RPC limit terdeteksi, menunggu 60 detik...")
+        return True
+    except web3.exceptions.BlockNotFound:
+        logger.warning("⚠️ Terkena limit RPC, menunggu 60 detik...")
         time.sleep(60)
-        check_rpc_limit()
+        return False
 
-# Fungsi kirim token dengan Adaptive Delay dan Cek RPC
+# Fungsi kirim token acak dengan adaptive delay
+
 def send_tokens():
     if not wallets_all:
         logger.warning("❗ Daftar wallet kosong.")
@@ -163,22 +221,24 @@ def send_tokens():
     logger.info(f"🚀 Mulai pengiriman batch ke {total} wallet...")
 
     for i, to_address in enumerate(wallets_all):
-        check_rpc_limit()
-
         try:
-            # Pembagian nominal per alamat
-            amount = random.uniform(10, 100) * (10 ** decimals)  # Nominal acak untuk setiap alamat
+            # Generate token amount between 10 and 100
+            amount = random.randint(10, 100) * (10 ** decimals)
+
+            # Check RPC limit before sending
+            if not check_rpc_limit():
+                return
+
             nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
-            tx = token_contract.functions.transfer(to_address, int(amount)).build_transaction({
+            tx = token_contract.functions.transfer(to_address, amount).build_transaction({
                 'from': SENDER_ADDRESS,
                 'nonce': nonce,
                 'gas': 60000,
                 'gasPrice': w3.eth.gas_price
             })
             signed = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-            tx_link = f"{EXPLORER_URL}tx/{tx_hash.hex()}"
-            logger.info(f"✅ Tx terkirim ke {to_address} | Hash: [link={tx_link}]View Transaction[/link]")
+            tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+            logger.info(f"✅ Tx terkirim ke {to_address} | Hash: {tx_hash.hex()}")
             time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
         except Exception as e:
             if "too many requests" in str(e).lower():
@@ -187,7 +247,8 @@ def send_tokens():
             else:
                 logger.error(f"❌ Gagal kirim ke {to_address}: {e}")
 
-# Fungsi penjadwalan pengiriman token setiap jam
+# Penjadwalan pengiriman token setiap jam
+
 def start_scheduler():
     schedule.every().hour.do(send_tokens)
     logger.info("⏰ Penjadwalan pengiriman token setiap jam telah dimulai.")
@@ -195,6 +256,12 @@ def start_scheduler():
         schedule.run_pending()
         time.sleep(1)
 
-if __name__ == "__main__":
+# Menu interaktif (opsional manual)
+
+def interactive_menu():
+    log_balances()
     threading.Thread(target=start_scheduler, daemon=True).start()
     show_log_live()
+
+if __name__ == "__main__":
+    interactive_menu()
