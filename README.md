@@ -59,10 +59,10 @@ Buat file .env di dalam folder project:
 
 Isi dengan:
 
-```PRIVATE_KEY=0xyourprivatekey
+PRIVATE_KEY=0xyourprivatekey
 SENDER_ADDRESS=0xYourWalletAddress
 INFURA_URL=https://mainnet.infura.io/v3/YOUR_PROJECT_ID
-TOKEN_CONTRACT=0xTokenContractAddress```
+TOKEN_CONTRACT=0xTokenContractAddress
 
 Note : ⚠️ Jangan pernah upload file .env ke publik!
 
