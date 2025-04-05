@@ -70,7 +70,8 @@ try:
 except ValueError:
     DAILY_LIMIT = 0
 
-DELAY_SECONDS = float(os.getenv("DELAY_SECONDS", "0.5"))
+MIN_DELAY_SECONDS = float(os.getenv("MIN_DELAY_SECONDS", "0.5"))
+MAX_DELAY_SECONDS = float(os.getenv("MAX_DELAY_SECONDS", "2"))
 
 if not TOKEN_CONTRACT_RAW:
     logger.error("❌ Environment variable 'TOKEN_CONTRACT' tidak ditemukan atau kosong!")
@@ -78,46 +79,12 @@ if not TOKEN_CONTRACT_RAW:
 
 TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(TOKEN_CONTRACT_RAW)
 
-# Pilih file CSV saat runtime
-def choose_csv_file():
-    files = [f for f in os.listdir('.') if f.endswith('.csv')]
-    if not files:
-        logger.error("❌ Tidak ada file CSV ditemukan di direktori saat ini.")
-        exit()
-
-    file_table = Table(title="📂 Pilih file CSV yang berisi wallet address", show_lines=True, box=box.SIMPLE_HEAVY)
-    file_table.add_column("No", justify="center")
-    file_table.add_column("File Name", style="cyan")
-
-    for idx, fname in enumerate(files, 1):
-        file_table.add_row(str(idx), fname)
-
-    console.print(file_table)
-
-    while True:
-        try:
-            choice = Prompt.ask("Masukkan nomor file yang ingin digunakan", default="1")
-            index = int(choice) - 1
-            if 0 <= index < len(files):
-                return files[index]
-            else:
-                console.print("[red]Nomor pilihan tidak valid. Coba lagi.[/red]")
-        except ValueError:
-            console.print("[red]Masukkan angka yang valid![/red]")
-
-CSV_FILE = choose_csv_file()
+CSV_FILE = "wallets.csv"  # default file, tidak ada prompt lagi
 
 # Connect Web3
 w3 = web3.Web3(web3.Web3.HTTPProvider(RPC_URL))
-try:
-    if not w3.is_connected():
-        raise ConnectionError("Gagal terhubung ke RPC")
-    _ = w3.eth.chain_id
-except Exception as e:
-    if "too many requests" in str(e).lower() or "429" in str(e):
-        logger.error("🚫 Terkena rate limit dari RPC provider (429 Too Many Requests)")
-    else:
-        logger.error(f"❌ Gagal terhubung ke jaringan! Detail: {e}")
+if not w3.is_connected():
+    logger.error("❌ Gagal terhubung ke jaringan! Cek RPC URL")
     exit()
 
 # ERC20 ABI
@@ -176,42 +143,51 @@ def load_wallets(csv_file):
                 valid_addresses.append(address)
             except:
                 continue
-    random.shuffle(valid_addresses)
     return valid_addresses
 
-# Fungsi kirim token dengan retry saat rate limit
+wallets_all = load_wallets(CSV_FILE)
 
-def send_token(to_address, amount, retries=3):
+# Fungsi monitoring balance dan TEA (ETH) untuk gas
+
+def log_balances():
+    try:
+        token_balance_raw = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
+        token_balance = token_balance_raw / (10 ** decimals)
+
+        eth_balance_wei = w3.eth.get_balance(SENDER_ADDRESS)
+        eth_balance = w3.from_wei(eth_balance_wei, 'ether')
+
+        gas_price = w3.eth.gas_price
+        estimated_gas_per_tx = 50000
+        estimated_tx_possible = int(eth_balance_wei / (estimated_gas_per_tx * gas_price))
+
+        logger.info(f"📊 [bold]Token balance:[/bold] {token_balance:.4f} {TOKEN_NAME}")
+        logger.info(f"⛽ [bold]TEA balance (untuk gas):[/bold] {eth_balance:.6f} TEA")
+        logger.info(f"🔢 [bold]Estimasi TX sisa:[/bold] {estimated_tx_possible} transaksi")
+    except Exception as e:
+        logger.error(f"[red]Gagal membaca balance: {e}[/red]")
+
+# Fungsi kirim token
+
+def send_token(to_address, amount):
     to_address = web3.Web3.to_checksum_address(to_address)
-    for attempt in range(retries):
-        try:
-            with nonce_lock:
-                nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
+    with nonce_lock:
+        nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
 
-            tx_func = token_contract.functions.transfer(to_address, int(amount * (10 ** decimals)))
+    tx_func = token_contract.functions.transfer(to_address, int(amount * (10 ** decimals)))
+    gas_estimate = tx_func.estimate_gas({'from': SENDER_ADDRESS})
+    gas_price = w3.eth.gas_price
 
-            gas_estimate = tx_func.estimate_gas({'from': SENDER_ADDRESS})
-            gas_price = w3.eth.gas_price
+    tx = tx_func.build_transaction({
+        'chainId': w3.eth.chain_id,
+        'gas': gas_estimate,
+        'gasPrice': gas_price,
+        'nonce': nonce
+    })
 
-            tx = tx_func.build_transaction({
-                'chainId': w3.eth.chain_id,
-                'gas': gas_estimate,
-                'gasPrice': gas_price,
-                'nonce': nonce
-            })
-
-            signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-            return w3.to_hex(tx_hash)
-
-        except Exception as e:
-            if "rate limit" in str(e).lower() or "429" in str(e):
-                logger.warning(f"⏳ RPC rate limit! Menunggu retry ke-{attempt + 1}...")
-                time.sleep(3 + attempt * 2)
-                continue
-            raise e
-
-    raise Exception("Gagal mengirim setelah beberapa percobaan.")
+    signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+    return w3.to_hex(tx_hash)
 
 # Kirim batch
 
@@ -248,26 +224,41 @@ def send_batch(wallets, min_amt, max_amt):
 
             logs.append(log)
             progress.update(task, advance=1)
-            time.sleep(DELAY_SECONDS)
+            time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
 
     panel = Panel("\n".join(logs), title="📤 Hasil Pengiriman", border_style="bright_magenta")
     console.print(panel)
 
-# Menu interaktif
+# Penjadwalan otomatis tiap jam
 
-def interactive_menu():
-    wallets = load_wallets(CSV_FILE)
-    if not wallets:
-        console.print("[red]Tidak ada address valid dalam file![/red]")
+def scheduled_send():
+    if not wallets_all:
+        logger.warning("📛 Tidak ada address untuk dikirim.")
         return
 
-    min_amt = float(Prompt.ask("💰 Jumlah minimum token", default="1"))
-    max_amt = float(Prompt.ask("💰 Jumlah maksimum token", default="5"))
-    count = Prompt.ask("📌 Jumlah address untuk dikirim (kosongkan untuk semua)", default="")
-    count = int(count) if count.strip().isdigit() else len(wallets)
+    log_balances()
 
-    selected_wallets = wallets[:count]
-    send_batch(selected_wallets, min_amt, max_amt)
+    batch_size = max(1, len(wallets_all) // 24)
+    selected_wallets = random.sample(wallets_all, batch_size)
+    logger.info(f"⏰ Menjalankan pengiriman batch otomatis ke {batch_size} address...")
+    send_batch(selected_wallets, 1.0, 5.0)
+
+schedule.every().hour.at(":00").do(scheduled_send)
+
+# Thread untuk scheduler
+
+def run_scheduler():
+    while True:
+        schedule.run_pending()
+        time.sleep(5)
+
+threading.Thread(target=run_scheduler, daemon=True).start()
+
+# Menu interaktif (opsional manual)
+
+def interactive_menu():
+    console.print("[cyan]Bot aktif. Pengiriman otomatis dijadwalkan setiap jam.[/cyan]")
+    Prompt.ask("Tekan ENTER untuk keluar kapan saja")
 
 if __name__ == "__main__":
     interactive_menu()
