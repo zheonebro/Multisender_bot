@@ -85,7 +85,6 @@ decimals = token_contract.functions.decimals().call()
 
 nonce_lock = threading.Lock()
 
-
 def convert_addresses_to_checksum(input_file, output_file):
     try:
         with open(input_file, newline='') as infile, open(output_file, 'w', newline='') as outfile:
@@ -104,7 +103,6 @@ def convert_addresses_to_checksum(input_file, output_file):
     except Exception as e:
         console.print(f"[red]Gagal konversi checksum: {e}[/red]")
 
-
 def load_wallets(csv_file):
     valid_addresses = []
     try:
@@ -120,14 +118,11 @@ def load_wallets(csv_file):
         console.print(f"[red]Gagal membaca file: {e}[/red]")
     return valid_addresses
 
-
 def get_token_balance(address):
     return token_contract.functions.balanceOf(address).call() / (10 ** decimals)
 
-
 def get_eth_balance(address):
     return w3.eth.get_balance(address) / 10**18
-
 
 def send_token(to_address, amount):
     try:
@@ -138,26 +133,29 @@ def send_token(to_address, amount):
     with nonce_lock:
         nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
 
-    tx_func = token_contract.functions.transfer(to_address, int(amount * (10 ** decimals)))
-    gas_estimate = tx_func.estimate_gas({'from': SENDER_ADDRESS})
-    gas_price = w3.eth.gas_price
+    try:
+        tx_func = token_contract.functions.transfer(to_address, int(amount * (10 ** decimals)))
+        gas_estimate = tx_func.estimate_gas({'from': SENDER_ADDRESS})
+        gas_price = w3.eth.gas_price
 
-    tx = tx_func.build_transaction({
-        'chainId': w3.eth.chain_id,
-        'gas': gas_estimate,
-        'gasPrice': gas_price,
-        'nonce': nonce
-    })
+        tx = tx_func.build_transaction({
+            'chainId': w3.eth.chain_id,
+            'gas': gas_estimate,
+            'gasPrice': gas_price,
+            'nonce': nonce
+        })
+    except Exception as e:
+        raise Exception(f"Gagal membangun transaksi: {e}")
 
     try:
         signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-        if not hasattr(signed_tx, 'rawTransaction'):
-            raise ValueError("SignedTransaction object missing 'rawTransaction'")
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        raw_tx = getattr(signed_tx, 'rawTransaction', None)
+        if raw_tx is None:
+            raise ValueError("SignedTransaction tidak memiliki 'rawTransaction'")
+        tx_hash = w3.eth.send_raw_transaction(raw_tx)
         return w3.to_hex(tx_hash)
     except Exception as e:
         raise Exception(f"Gagal menandatangani atau mengirim transaksi: {e}")
-
 
 def send_tokens(csv_file, min_amt, max_amt, count=None):
     global daily_sent_total
@@ -208,9 +206,7 @@ def send_tokens(csv_file, min_amt, max_amt, count=None):
     except Exception as e:
         console.print(f"[red]❌ Gagal menyimpan log: {e}[/red]")
 
-
 # Jadwal dan lainnya tetap
-# (tidak diubah)
 
 def schedule_job(csv_file, min_amt, max_amt, schedule_time):
     def job():
@@ -223,7 +219,6 @@ def schedule_job(csv_file, min_amt, max_amt, schedule_time):
     while True:
         schedule.run_pending()
         time.sleep(5)
-
 
 def run_bot():
     banner = Align.center("""
@@ -240,6 +235,8 @@ def run_bot():
 
     min_amt = float(Prompt.ask("🔢 Jumlah MIN token", default="5"))
     max_amt = float(Prompt.ask("🔢 Jumlah MAX token", default="20"))
+    address_count = Prompt.ask("📦 Berapa jumlah address yang ingin dikirim? Tekan Enter untuk semua", default="")
+    count = int(address_count) if address_count.strip().isdigit() else None
 
     console.print("\n[bold green]Pilih mode pengiriman:[/bold green]")
     console.print("[cyan][1][/cyan] Kirim Sekali (langsung)")
@@ -249,17 +246,16 @@ def run_bot():
     mode = Prompt.ask("📌 Pilihan Anda", choices=["1", "2", "3"], default="1")
 
     if mode == "1":
-        send_tokens(CSV_FILE, min_amt, max_amt)
+        send_tokens(CSV_FILE, min_amt, max_amt, count=count)
     elif mode == "2":
         schedule_time = Prompt.ask("⏰ Jadwal harian berikutnya (HH:MM)", default="09:00")
-        send_tokens(CSV_FILE, min_amt, max_amt)
+        send_tokens(CSV_FILE, min_amt, max_amt, count=count)
         schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
     elif mode == "3":
         console.print("[bold yellow]🔍 Pengujian: Kirim ke 10 address acak...[/bold yellow]")
         send_tokens(CSV_FILE, min_amt, max_amt, count=10)
         schedule_time = Prompt.ask("⏰ Jadwal pengiriman (HH:MM)", default="09:00")
         schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
-
 
 if __name__ == "__main__":
     run_bot()
