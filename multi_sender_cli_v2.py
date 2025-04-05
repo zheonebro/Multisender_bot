@@ -9,6 +9,9 @@ from rich import print
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+from rich.align import Align
 from web3 import Web3
 import schedule
 
@@ -21,7 +24,7 @@ PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_ADDRESS = Web3.to_checksum_address("0xbB5b70Ac7e8CE2cA9afa044638CBb545713eC34F")
-CSV_FILE = "wallets.csv"  # Tetap menggunakan nama file default
+CSV_FILE = "wallets.csv"
 
 # Connect Web3
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
@@ -51,9 +54,14 @@ def load_wallets(csv_file):
         return []
 
 def send_token(to_address, amount):
+    try:
+        to_address = Web3.to_checksum_address(to_address)
+    except Exception as e:
+        raise ValueError(f"Alamat tidak valid: {to_address}") from e
+
     nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
     tx = token_contract.functions.transfer(
-        Web3.to_checksum_address(to_address),
+        to_address,
         int(amount * (10 ** decimals))
     ).build_transaction({
         'chainId': w3.eth.chain_id,
@@ -70,29 +78,40 @@ def send_tokens(csv_file, min_amount, max_amount):
     if not addresses:
         return
 
-    table = Table(title="📤 Status Pengiriman")
-    table.add_column("No", justify="right")
-    table.add_column("Address", justify="left")
-    table.add_column("Jumlah", justify="right")
-    table.add_column("Status", justify="left")
+    table = Table(title="📤 Status Pengiriman", show_lines=True)
+    table.add_column("No", justify="center", style="bold")
+    table.add_column("Address", justify="left", style="cyan")
+    table.add_column("Jumlah", justify="right", style="magenta")
+    table.add_column("Status", justify="center")
 
-    for i, address in enumerate(addresses, start=1):
-        for attempt in range(3):
-            try:
-                amount = round(random.uniform(min_amount, max_amount), 6)
-                tx_hash = send_token(address, amount)
-                log_message = f"[green][{datetime.now()}] ✅ Sukses kirim {amount} token ke {address} | TX: {tx_hash}[/green]"
-                console.print(log_message)
-                table.add_row(str(i), address, str(amount), f"✅ {tx_hash[:10]}...")
-                break
-            except Exception as e:
-                if attempt == 2:
-                    log_message = f"[red][{datetime.now()}] ❌ Gagal kirim ke {address}: {e}[/red]"
+    with Progress(
+        SpinnerColumn(),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console
+    ) as progress:
+        task = progress.add_task("Mengirim token...", total=len(addresses))
+
+        for i, address in enumerate(addresses, start=1):
+            for attempt in range(3):
+                try:
+                    amount = round(random.uniform(min_amount, max_amount), 6)
+                    tx_hash = send_token(address, amount)
+                    log_message = f"[green][{datetime.now()}] ✅ Sukses kirim {amount} token ke {address} | TX: {tx_hash}[/green]"
                     console.print(log_message)
-                    table.add_row(str(i), address, "-", f"❌ {e}")
-                else:
-                    time.sleep(2)
-    console.print(table)
+                    table.add_row(str(i), address, str(amount), f"✅ {tx_hash[:10]}...")
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        log_message = f"[red][{datetime.now()}] ❌ Gagal kirim ke {address}: {e}[/red]"
+                        console.print(log_message)
+                        table.add_row(str(i), address, "-", f"❌ {e}")
+                    else:
+                        time.sleep(2)
+            progress.update(task, advance=1)
+
+    console.print(Panel(table, title="📬 Ringkasan Pengiriman", border_style="bright_blue"))
 
 def schedule_job(csv_file, min_amt, max_amt, schedule_time):
     def job():
@@ -100,11 +119,9 @@ def schedule_job(csv_file, min_amt, max_amt, schedule_time):
         console.print(f"\n[cyan]⏰ [{now}] Menjalankan pengiriman token terjadwal...[/cyan]")
         send_tokens(csv_file, min_amt, max_amt)
 
-    # Jalankan pertama kali saat script dimulai
     console.print("[bold magenta]\n🚀 Pengiriman awal dimulai sekarang...[/bold magenta]")
     send_tokens(csv_file, min_amt, max_amt)
 
-    # Jadwalkan untuk berikutnya
     schedule.every().day.at(schedule_time).do(job)
     console.print(f"[bold green]✅ Bot dijadwalkan setiap hari jam {schedule_time}[/bold green]")
 
@@ -113,7 +130,17 @@ def schedule_job(csv_file, min_amt, max_amt, schedule_time):
         time.sleep(10)
 
 def main():
-    console.print("[bold cyan]=== BOT MULTISENDER ERC20 TERJADWAL ===[/bold cyan]")
+    banner = Align.center("""
+███╗   ███╗██╗   ██╗██╗██╗     ███████╗███████╗██████╗ 
+████╗ ████║██║   ██║██║██║     ██╔════╝██╔════╝██╔══██╗
+██╔████╔██║██║   ██║██║██║     █████╗  █████╗  ██║  ██║
+██║╚██╔╝██║██║   ██║██║██║     ██╔══╝  ██╔══╝  ██║  ██║
+██║ ╚═╝ ██║╚██████╔╝██║███████╗███████╗███████╗██████╔╝
+╚═╝     ╚═╝ ╚═════╝ ╚═╝╚══════╝╚══════╝╚══════╝╚═════╝ 
+""", vertical="middle")
+    console.print(banner, style="bold blue")
+
+    console.print("[bold cyan]=== BOT MULTISENDER ERC20 TERJADWAL ===[/bold cyan]", justify="center")
     min_amt = float(Prompt.ask("🔢 Jumlah MIN token", default="5"))
     max_amt = float(Prompt.ask("🔢 Jumlah MAX token", default="20"))
 
