@@ -15,6 +15,7 @@ from rich.logging import RichHandler
 from rich.layout import Layout
 from rich.live import Live
 from rich.table import Table
+from rich.text import Text
 import web3
 import schedule
 
@@ -31,7 +32,7 @@ BANNER = """
 ███████╗██║  ██║╚██████╔╝╚██████╔╝██║     ╚██████╔╝██║ ╚████║
 ╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝      ╚═════╝ ╚═╝  ╚═══╝
 """
-console.print(Panel.fit(BANNER, title="[bold green]🚀 ERC20 Sender Bot[/bold green]", border_style="cyan"))
+console.print(Panel.fit(BANNER, title="[bold green]🚀 ERC20 Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
 
 # Setup logging
 log_dir = "runtime_logs"
@@ -125,12 +126,7 @@ token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
 decimals = token_contract.functions.decimals().call()
 TOKEN_NAME = token_contract.functions.name().call()
 
-nonce_lock = threading.Lock()
-daily_sent_total = 0.0
-daily_lock = threading.Lock()
-
 # Fungsi load wallet
-
 def load_wallets(csv_file):
     valid_addresses = []
     with open(csv_file, newline='') as f:
@@ -145,58 +141,17 @@ def load_wallets(csv_file):
 
 wallets_all = load_wallets(CSV_FILE)
 
-# Fungsi monitoring balance dan TEA (ETH) untuk gas
-
-def log_balances():
+# Fungsi cek limit RPC dan tunda jika terdeteksi
+def check_rpc_limit():
     try:
-        token_balance_raw = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
-        token_balance = token_balance_raw / (10 ** decimals)
+        w3.eth.get_block('latest')
+    except web3.exceptions.ConnectionError:
+        logger.warning("⚠️ RPC limit terdeteksi, menunggu 60 detik...")
+        time.sleep(60)
+        check_rpc_limit()
 
-        eth_balance_wei = w3.eth.get_balance(SENDER_ADDRESS)
-        eth_balance = w3.from_wei(eth_balance_wei, 'ether')
-
-        gas_price = w3.eth.gas_price
-        estimated_gas_per_tx = 50000
-        estimated_tx_possible = int(eth_balance_wei / (estimated_gas_per_tx * gas_price))
-
-        logger.info(f"📊 [bold]Token balance:[/bold] {token_balance:.4f} {TOKEN_NAME}")
-        logger.info(f"⛽ [bold]TEA balance (untuk gas):[/bold] {eth_balance:.6f} TEA")
-        logger.info(f"🔗 [bold]Estimasi TX sisa:[/bold] {estimated_tx_possible} transaksi")
-    except Exception as e:
-        logger.error(f"[red]Gagal membaca balance: {e}[/red]")
-
-# Fungsi tampilkan log online berjalan
-
-def show_log_live():
-    log_file = os.path.join("runtime_logs", "runtime.log")
-    if not os.path.exists(log_file):
-        console.print("[red]Log file tidak ditemukan.[/red]")
-        return
-
-    with Live(console=console, refresh_per_second=1):
-        try:
-            while True:
-                with open(log_file, "r", encoding="utf-8") as f:
-                    lines = f.readlines()[-20:]
-                table = Table(title="📜 Log Runtime Berjalan", show_header=True, header_style="bold cyan")
-                table.add_column("Waktu", style="dim")
-                table.add_column("Pesan")
-                for line in lines:
-                    try:
-                        timestamp, msg = line.strip().split(" ", 1)
-                        table.add_row(timestamp, msg)
-                    except:
-                        continue
-                console.print(table)
-                time.sleep(3)
-                console.clear()
-        except KeyboardInterrupt:
-            return
-
-# Fungsi kirim token acak dengan adaptive delay
-
+# Fungsi kirim token dengan Adaptive Delay dan Cek RPC
 def send_tokens():
-    global daily_sent_total
     if not wallets_all:
         logger.warning("❗ Daftar wallet kosong.")
         return
@@ -206,28 +161,22 @@ def send_tokens():
     logger.info(f"🚀 Mulai pengiriman batch ke {total} wallet...")
 
     for i, to_address in enumerate(wallets_all):
+        check_rpc_limit()
+
         try:
-            amount = 1 * (10 ** decimals)
-            
-            # Cek apakah daily limit tercapai
-            if daily_sent_total + amount > DAILY_LIMIT:
-                logger.warning(f"🛑 Daily limit tercapai. Total terkirim hari ini: {daily_sent_total:.4f} {TOKEN_NAME}")
-                break
-            
+            # Pembagian nominal per alamat
+            amount = random.uniform(10, 100) * (10 ** decimals)  # Nominal acak untuk setiap alamat
             nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
-            tx = token_contract.functions.transfer(to_address, amount).build_transaction({
+            tx = token_contract.functions.transfer(to_address, int(amount)).build_transaction({
                 'from': SENDER_ADDRESS,
                 'nonce': nonce,
                 'gas': 60000,
                 'gasPrice': w3.eth.gas_price
             })
             signed = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-            tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
-            
-            # Update total terkirim
-            daily_sent_total += amount
-            logger.info(f"✅ Tx terkirim ke {to_address} | Hash: {tx_hash.hex()}")
-            
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            tx_link = f"{EXPLORER_URL}tx/{tx_hash.hex()}"
+            logger.info(f"✅ Tx terkirim ke {to_address} | Hash: [link={tx_link}]View Transaction[/link]")
             time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
         except Exception as e:
             if "too many requests" in str(e).lower():
@@ -236,29 +185,14 @@ def send_tokens():
             else:
                 logger.error(f"❌ Gagal kirim ke {to_address}: {e}")
 
-# Reset daily_sent_total setiap hari pada jam 00:00
-def reset_daily_limit():
-    global daily_sent_total
-    schedule.every().day.at("00:00").do(lambda: (daily_sent_total := 0.0))
-    logger.info("⏰ Reset limit harian dimulai setiap jam 00:00")
-
-# Penjadwalan pengiriman token setiap jam
-
+# Fungsi penjadwalan pengiriman token setiap jam
 def start_scheduler():
     schedule.every().hour.do(send_tokens)
-    reset_daily_limit()
     logger.info("⏰ Penjadwalan pengiriman token setiap jam telah dimulai.")
     while True:
         schedule.run_pending()
         time.sleep(1)
 
-# Menu interaktif (opsional manual)
-
-def interactive_menu():
-    log_balances()
-    threading.Thread(target=start_scheduler, daemon=True).start()
-    console.print("[cyan]Bot aktif. Pengiriman otomatis dijadwalkan setiap jam.[/cyan]")
-    show_log_live()
-
 if __name__ == "__main__":
-    interactive_menu()
+    threading.Thread(target=start_scheduler, daemon=True).start()
+    show_log_live()
