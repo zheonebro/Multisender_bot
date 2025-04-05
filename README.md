@@ -59,10 +59,16 @@ Buat file .env di dalam folder project:
 
 Isi dengan:
 
-PRIVATE_KEY=0xyourprivatekey
-SENDER_ADDRESS=0xYourWalletAddress
-INFURA_URL=https://mainnet.infura.io/v3/YOUR_PROJECT_ID
+PRIVATE_KEY=0xPRIVATEKEYANDA
+
+SENDER_ADDRESS=0xAlamatWalletAnda
+
+INFURA_URL=https://mainnet.infura.io/v3/YOUR-PROJECT-ID
+
 TOKEN_CONTRACT=0xTokenContractAddress
+
+#untuk infura URL tea sepolia tesnet gunakan RPC dibawah ini#
+```https://tea-sepolia.g.alchemy.com/v2/yN8jExL8zpeSAT-d20KX1obM239S83Lc```
 
 Note : ⚠️ Jangan pernah upload file .env ke publik!
 
