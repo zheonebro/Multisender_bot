@@ -10,15 +10,18 @@ import logging
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.prompt import Prompt
+from rich.table import Table
 from rich.panel import Panel
-from rich.progress import Progress
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from rich.align import Align
 from rich.logging import RichHandler
 from rich.layout import Layout
 from rich.live import Live
 from rich.text import Text
+from rich import box
 import web3
 import schedule
+from web3.exceptions import TransactionNotFound
 
 # Init
 console = Console()
@@ -33,7 +36,7 @@ BANNER = """
 ███████╗██║  ██║╚██████╔╝╚██████╔╝██║     ╚██████╔╝██║ ╚████║
 ╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝      ╚═════╝ ╚═╝  ╚═══╝
 """
-console.print(Panel.fit(BANNER, title="[bold green]🚀 ERC20 Sender Bot[/bold green]", border_style="cyan"))
+console.print(Panel.fit(BANNER, title="[bold green]🚀 ERC20 Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
 
 # Setup logging
 log_dir = "runtime_logs"
@@ -56,6 +59,7 @@ PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 RAW_SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_RAW = os.getenv("TOKEN_CONTRACT")
+EXPLORER_URL = "https://sepolia.tea.xyz/"
 
 if not PRIVATE_KEY or not RAW_SENDER_ADDRESS or not RPC_URL:
     logger.error("❌ PRIVATE_KEY, SENDER_ADDRESS, atau INFURA_URL tidak ditemukan di .env!")
@@ -126,7 +130,12 @@ token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
 decimals = token_contract.functions.decimals().call()
 TOKEN_NAME = token_contract.functions.name().call()
 
+nonce_lock = threading.Lock()
+daily_sent_total = 0.0
+daily_lock = threading.Lock()
+
 # Fungsi load wallet
+
 def load_wallets(csv_file):
     valid_addresses = []
     with open(csv_file, newline='') as f:
@@ -142,6 +151,7 @@ def load_wallets(csv_file):
 wallets_all = load_wallets(CSV_FILE)
 
 # Fungsi monitoring balance dan TEA (ETH) untuk gas
+
 def log_balances():
     try:
         token_balance_raw = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
@@ -154,42 +164,28 @@ def log_balances():
         estimated_gas_per_tx = 50000
         estimated_tx_possible = int(eth_balance_wei / (estimated_gas_per_tx * gas_price))
 
-        logger.info(f"📊 Token balance: {token_balance:.4f} {TOKEN_NAME}")
-        logger.info(f"⛽ TEA balance (for gas): {eth_balance:.6f} TEA")
-        logger.info(f"🔗 Estimated remaining TXs: {estimated_tx_possible} transactions")
+        logger.info(f"📊 [bold]Token balance:[/bold] {token_balance:.4f} {TOKEN_NAME}")
+        logger.info(f"⛽ [bold]TEA balance (untuk gas):[/bold] {eth_balance:.6f} TEA")
+        logger.info(f"🔗 [bold]Estimasi TX sisa:[/bold] {estimated_tx_possible} transaksi")
     except Exception as e:
-        logger.error(f"❌ Error reading balances: {e}")
+        logger.error(f"[red]Gagal membaca balance: {e}[/red]")
 
-# Fungsi tampilkan log runtime
-def show_log_live():
-    log_file = os.path.join("runtime_logs", "runtime.log")
-    if not os.path.exists(log_file):
-        console.print("[red]Log file tidak ditemukan.[/red]")
-        return
+# Fungsi kirim token dengan log lebih menarik dan detail
 
-    with Live(console=console, refresh_per_second=1):
-        try:
-            while True:
-                with open(log_file, "r", encoding="utf-8") as f:
-                    lines = f.readlines()[-20:]
-                for line in lines:
-                    console.print(line.strip())
-                time.sleep(3)
-                console.clear()
-        except KeyboardInterrupt:
-            return
-
-# Fungsi kirim token dengan log jumlah alamat
 def send_tokens():
     if not wallets_all:
         logger.warning("❗ Daftar wallet kosong.")
         return
 
     total_addresses = len(wallets_all)
-    logger.info(f"🚀 Total {total_addresses} alamat akan menerima token pada batch ini...")
+    logger.info(f"🚀 **Token Transfer Started** 🚀")
+    logger.info(f"--------------------------------")
+    logger.info(f"🕒 {datetime.now().strftime('%H:%M:%S')} → **Total Alamat**: {total_addresses}")
+    logger.info(f"📊 **Token Balance**: {token_balance:.4f} {TOKEN_NAME}")
+    logger.info(f"⛽ **TEA Balance**: {eth_balance:.6f} TEA (Enough for {estimated_tx_possible} transactions)")
+    logger.info(f"--------------------------------")
 
     random.shuffle(wallets_all)
-    logger.info(f"🔀 Mengacak urutan pengiriman...")
     for i, to_address in enumerate(wallets_all):
         try:
             # Menghitung jumlah token yang akan dikirim secara acak
@@ -203,25 +199,31 @@ def send_tokens():
             })
             signed = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
             tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-            logger.info(f"✅ Tx terkirim ke {to_address} | Hash: {tx_hash.hex()} | Jumlah Token: {amount / (10 ** decimals)} {TOKEN_NAME}")
+            logger.info(f"🔄 **Sending Tokens to Address {i+1}:**")
+            logger.info(f"💰 Amount: {amount / (10 ** decimals)} {TOKEN_NAME}")
+            logger.info(f"🔗 Transaction Hash: `{tx_hash.hex()}`")
+            logger.info(f"⏳ **Waiting** for transaction to confirm...")
             time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
+            logger.info(f"✅ **Transaction Successful!**")
+            logger.info(f"🕒 {datetime.now().strftime('%H:%M:%S')} → **Sent {amount / (10 ** decimals)} {TOKEN_NAME}** to Address {i+1}")
+            logger.info(f"🔗 **Transaction Hash**: `{tx_hash.hex()}`")
+            logger.info(f"🧑‍💻 **Address**: `{to_address}`")
+            logger.info(f"--------------------------------")
         except Exception as e:
             if "too many requests" in str(e).lower():
-                logger.warning("⚠️ Terkena limit RPC. Menunggu 60 detik...")
+                logger.warning(f"⚠️ **RPC Limit Hit**:")
+                logger.warning(f"🕒 {datetime.now().strftime('%H:%M:%S')} → **Waiting 60 seconds** before resuming...")
                 time.sleep(60)
             else:
-                logger.error(f"❌ Gagal kirim ke {to_address}: {e}")
+                logger.error(f"❌ **Failed to send to {to_address}: {e}**")
+    logger.info(f"🎉 **Batch Completed!**")
+    logger.info(f"🕒 {datetime.now().strftime('%H:%M:%S')} → **Total Sent Tokens**: {total_tokens_sent}")
+    logger.info(f"--------------------------------")
 
-# Penjadwalan pengiriman token setiap jam
-def start_scheduler():
-    schedule.every().hour.do(send_tokens)
-    logger.info("⏰ Penjadwalan pengiriman token setiap jam telah dimulai.")
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
-
-# Main function untuk menjalankan bot
-if __name__ == "__main__":
+# Main function
+def main():
     log_balances()
-    threading.Thread(target=start_scheduler, daemon=True).start()
-    show_log_live()
+    send_tokens()
+
+if __name__ == "__main__":
+    main()
