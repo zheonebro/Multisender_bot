@@ -7,6 +7,7 @@ import traceback
 import threading
 import logging
 
+
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
@@ -16,6 +17,7 @@ from rich.layout import Layout
 from rich.live import Live
 from rich.table import Table
 from rich.text import Text
+from rich import box  # Pastikan ini ada di bagian impor
 import web3
 import schedule
 
