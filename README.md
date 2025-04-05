@@ -130,6 +130,10 @@ Ikuti instruksi interaktif untuk:
 
 
 ### setelah bot jalan gunakan perintah ctrl a + d agar screen tetep berjalan di background
+> untuk check apakah bot tetap berajalan sesuai jadwal gunakan perintah
+```
+screen -r multisender
+```
 
 
 
@@ -150,4 +154,29 @@ Ikuti instruksi interaktif untuk:
 ---
 
 
+## 📄 Melihat Log Aktivitas
+
+Script ini mencatat semua transaksi yang berhasil maupun gagal ke file `logs.txt`. Berikut beberapa command yang bisa digunakan untuk memeriksa log:
+
+- **Menampilkan seluruh isi log:**
+  ```bash
+  cat logs.txt
+  ```
+
+- **Menampilkan log terbaru secara real-time (live monitoring):**
+  ```bash
+  tail -f logs.txt
+  ```
+
+- **Melihat 20 baris terakhir dari log:**
+  ```bash
+  tail -n 20 logs.txt
+  ```
+
+- **Menyaring log berdasarkan tanggal, alamat, atau kata kunci:**
+  ```bash
+  grep "2025-04-05" logs.txt
+  ```
+
+---
 
