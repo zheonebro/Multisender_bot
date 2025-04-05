@@ -50,6 +50,7 @@ PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 RAW_SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_RAW = os.getenv("TOKEN_CONTRACT")
+MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "50"))
 EXPLORER_URL = "https://sepolia.tea.xyz/"
 
 if not PRIVATE_KEY or not RAW_SENDER_ADDRESS or not RPC_URL:
@@ -74,6 +75,7 @@ if not TOKEN_CONTRACT_RAW:
 TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(TOKEN_CONTRACT_RAW)
 
 CSV_FILE = "wallets.csv"
+SENT_FILE = "sent_wallets.txt"
 
 # Connect Web3
 w3 = web3.Web3(web3.Web3.HTTPProvider(RPC_URL))
@@ -122,17 +124,35 @@ decimals = token_contract.functions.decimals().call()
 TOKEN_NAME = token_contract.functions.name().call()
 
 nonce_lock = threading.Lock()
+global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
 wallets_all = []
 
 # Load wallet
+
+def load_sent_wallets():
+    if not os.path.exists(SENT_FILE):
+        return set()
+    with open(SENT_FILE, 'r') as f:
+        return set(line.strip() for line in f if line.strip())
+
+def save_sent_wallet(address):
+    with open(SENT_FILE, 'a') as f:
+        f.write(f"{address}\n")
+
 def load_wallets(csv_file):
+    sent_addresses = load_sent_wallets()
     valid_addresses = []
+    if not os.path.exists(csv_file):
+        logger.error(f"❌ File {csv_file} tidak ditemukan!")
+        return valid_addresses
+
     with open(csv_file, newline='') as f:
         reader = csv.DictReader(f)
         for row in reader:
             try:
                 address = web3.Web3.to_checksum_address(row['address'].strip())
-                valid_addresses.append(address)
+                if address not in sent_addresses:
+                    valid_addresses.append(address)
             except:
                 continue
     return valid_addresses
@@ -165,8 +185,12 @@ def log_balances():
     retry=tenacity.retry_if_exception_type(Exception)
 )
 def safe_send_transaction(tx):
-    signed = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    return w3.eth.send_raw_transaction(signed.raw_transaction)
+    try:
+        signed = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+        return w3.eth.send_raw_transaction(signed.raw_transaction)
+    except Exception as e:
+        logger.error(f"Gagal kirim TX: {e}")
+        raise
 
 # Multi-thread
 THREAD_WORKERS = 5
@@ -177,88 +201,26 @@ MIN_TOKEN = 5
 MAX_TOKEN = 50
 
 def process_batch(addresses_batch, batch_id):
+    global global_nonce
     for i, to_address in enumerate(addresses_batch):
         try:
             token_amount = random.randint(MIN_TOKEN, MAX_TOKEN)
             amount = token_amount * (10 ** decimals)
             with nonce_lock:
-                nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
+                nonce = global_nonce
+                global_nonce += 1
                 tx = token_contract.functions.transfer(to_address, amount).build_transaction({
                     'from': SENDER_ADDRESS,
                     'nonce': nonce,
                     'gas': 60000,
-                    'gasPrice': w3.eth.gas_price
+                    'gasPrice': min(w3.eth.gas_price, w3.to_wei(MAX_GAS_PRICE_GWEI, 'gwei'))
                 })
                 tx_hash = safe_send_transaction(tx)
 
             logger.info(f"[BATCH {batch_id}] ✅ Sent {token_amount} {TOKEN_NAME} to {to_address}")
             logger.info(f"[TX] https://sepolia.etherscan.io/tx/{tx_hash.hex()}")
+            save_sent_wallet(to_address)
         except Exception as e:
             logger.error(f"[BATCH {batch_id}] ❌ Failed to send to {to_address}: {e}")
 
         time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
-
-def send_tokens_multithreaded():
-    if not wallets_all:
-        logger.warning("❗ Daftar wallet kosong.")
-        return
-
-    logger.info("🚀 Memulai pengiriman multi-threaded...")
-
-    random.shuffle(wallets_all)
-    batches = [wallets_all[i:i + BATCH_SIZE] for i in range(0, len(wallets_all), BATCH_SIZE)]
-
-    with ThreadPoolExecutor(max_workers=THREAD_WORKERS) as executor:
-        futures = {executor.submit(process_batch, batch, idx+1): idx+1 for idx, batch in enumerate(batches)}
-
-        for future in as_completed(futures):
-            batch_id = futures[future]
-            try:
-                future.result()
-            except Exception as e:
-                logger.error(f"❌ BATCH {batch_id} failed with error: {e}")
-
-    logger.info("🎉 Semua batch selesai dikirim.")
-    logger.info(f"💤 Idle selama {IDLE_AFTER_BATCH_SECONDS} detik...")
-    time.sleep(IDLE_AFTER_BATCH_SECONDS)
-
-# CLI Menu
-
-def cli_menu():
-    global MIN_TOKEN, MAX_TOKEN
-    while True:
-        console.print("\n[bold cyan]Menu:[/bold cyan]\n1. Kirim Token Sekarang\n2. Jadwalkan Kirim Harian\n3. Keluar", style="bold")
-        choice = input("Pilih opsi (1/2/3): ").strip()
-
-        if choice == "1" or choice == "2":
-            try:
-                min_input = input("Masukkan minimum token per transaksi (default 5): ").strip()
-                MIN_TOKEN = int(min_input) if min_input else 5
-                max_input = input("Masukkan maksimum token per transaksi (default 50): ").strip()
-                MAX_TOKEN = int(max_input) if max_input else 50
-            except ValueError:
-                MIN_TOKEN, MAX_TOKEN = 5, 50
-                logger.warning("Input tidak valid. Menggunakan default 5-50 token.")
-
-            if MIN_TOKEN > MAX_TOKEN:
-                MIN_TOKEN, MAX_TOKEN = MAX_TOKEN, MIN_TOKEN
-                logger.warning("Minimum lebih besar dari maksimum. Nilai ditukar.")
-
-            if choice == "1":
-                log_balances()
-                send_tokens_multithreaded()
-            else:
-                schedule.every().day.at("10:00").do(lambda: [log_balances(), send_tokens_multithreaded()])
-                console.print("⏰ Pengiriman dijadwalkan setiap hari pukul 10:00.")
-                while True:
-                    schedule.run_pending()
-                    time.sleep(60)
-
-        elif choice == "3":
-            logger.info("👋 Keluar dari program.")
-            break
-        else:
-            console.print("❌ Pilihan tidak valid. Coba lagi.", style="red")
-
-if __name__ == "__main__":
-    cli_menu()
