@@ -78,7 +78,12 @@ def load_wallets(csv_file):
         with open(csv_file, newline='') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                valid_addresses.append(row['address'].strip())
+                try:
+                    addr = web3.Web3.to_checksum_address(row['address'].strip())
+                    _ = token_contract.functions.balanceOf(addr).call()
+                    valid_addresses.append(addr)
+                except:
+                    console.print(f"[yellow]⚠️ Alamat tidak valid atau gagal verifikasi: {row['address']} - dilewati[/yellow]")
     except Exception as e:
         console.print(f"[red]Gagal membaca file: {e}[/red]")
     return valid_addresses
@@ -109,10 +114,13 @@ def send_token(to_address, amount):
     tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
     return w3.to_hex(tx_hash)
 
-def send_tokens(csv_file, min_amount, max_amount):
+def send_tokens(csv_file, min_amount, max_amount, limit=150):
     addresses = load_wallets(csv_file)
     if not addresses:
         return
+
+    if limit is not None and len(addresses) > limit:
+        addresses = random.sample(addresses, limit)
 
     estimated_total = len(addresses) * ((min_amount + max_amount) / 2)
     balance = get_token_balance(SENDER_ADDRESS)
@@ -166,14 +174,21 @@ def send_tokens(csv_file, min_amount, max_amount):
 
     console.print(Panel(table, title="📬 Ringkasan Pengiriman", border_style="bright_blue"))
 
+def test_send(csv_file, min_amt, max_amt):
+    console.print("[yellow]🔍 Melakukan pengujian pengiriman token ke 10 address...[/yellow]")
+    send_tokens(csv_file, min_amt, max_amt, limit=10)
+
 def schedule_job(csv_file, min_amt, max_amt, schedule_time):
     def job():
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         console.print(f"\n[cyan]⏰ [{now}] Menjalankan pengiriman token terjadwal...[/cyan]")
-        send_tokens(csv_file, min_amt, max_amt)
+        send_tokens(csv_file, min_amt, max_amt, limit=150)
+
+    console.print("[bold yellow]🔍 Menjalankan tes pengiriman sebelum dijadwalkan...[/bold yellow]")
+    test_send(csv_file, min_amt, max_amt)
 
     console.print("[bold magenta]\n🚀 Pengiriman awal dimulai sekarang...[/bold magenta]")
-    send_tokens(csv_file, min_amt, max_amt)
+    send_tokens(csv_file, min_amt, max_amt, limit=150)
 
     schedule.every().day.at(schedule_time).do(job)
     console.print(f"[bold green]✅ Bot dijadwalkan setiap hari jam {schedule_time}[/bold green]")
@@ -184,12 +199,12 @@ def schedule_job(csv_file, min_amt, max_amt, schedule_time):
 
 def main():
     banner = Align.center("""
-███╗   ███╗██╗   ██╗██╗██╗     ███████╗███████╗██████╗ 
-████╗ ████║██║   ██║██║██║     ██╔════╝██╔════╝██╔══██╗
-██╔████╔██║██║   ██║██║██║     █████╗  █████╗  ██║  ██║
-██║╚██╔╝██║██║   ██║██║██║     ██╔══╝  ██╔══╝  ██║  ██║
-██║ ╚═╝ ██║╚██████╔╝██║███████╗███████╗███████╗██████╔╝
-╚═╝     ╚═╝ ╚═════╝ ╚═╝╚══════╝╚══════╝╚══════╝╚═════╝ 
+███▃   ███▃██▄   ██▄██▄██▄     ██████▃█████▃████▀ 
+████▄ ████▄██▄   ██▄██▄     ██▌██▌█8█▌██▄██▌
+██▄██▄██▄██▄   ██▄██▄     ████▃  ████▃  ██▄  ██▄
+██▄▌██▄██▄   ██▄██▄     ██▌▌██▄██▌▌██▄  ██▄
+██▄ ▌▀██▄▄████▀▄██▄█████▃█████▃████▀ 
+▌▀▌     ▌▀▌ ▌▀▀▀▀▀▀▌ ▌▀▀▀▀▀▀▌▌▀▀▀▀▀ 
 """, vertical="middle")
     console.print(banner, style="bold blue")
 
@@ -222,7 +237,7 @@ def main():
 
     if mode == "1":
         console.print("[bold magenta]\n🚀 Pengiriman dimulai...[/bold magenta]")
-        send_tokens(CSV_FILE, min_amt, max_amt)
+        send_tokens(CSV_FILE, min_amt, max_amt, limit=150)
     elif mode == "2":
         schedule_time = Prompt.ask("⏰ Waktu pengiriman harian berikutnya (HH:MM)", default="09:00")
         schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
@@ -231,8 +246,10 @@ def main():
         console.print(f"[yellow]⏳ Menunggu waktu terjadwal: {schedule_time}[/yellow]")
 
         def job():
+            console.print("[bold yellow]🔍 Tes pengiriman sebelum kirim utama...[/bold yellow]")
+            test_send(CSV_FILE, min_amt, max_amt)
             console.print("[bold magenta]\n🚀 Pengiriman terjadwal dimulai...[/bold magenta]")
-            send_tokens(CSV_FILE, min_amt, max_amt)
+            send_tokens(CSV_FILE, min_amt, max_amt, limit=150)
 
         schedule.every().day.at(schedule_time).do(job)
 
