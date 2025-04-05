@@ -85,14 +85,20 @@ INFURA_URL=https://mainnet.infura.io/v3/YOUR-PROJECT-ID
 TOKEN_CONTRACT=0xTokenContractAddress
 ```
 
-> ***untuk infura URL tea sepolia tesnet gunakan RPC dibawah ini***
+> ***untuk INFURA_URL isi dengann tea sepolia tesnet , gunakan RPC dibawah ini***
 
 ```
 https://tea-sepolia.g.alchemy.com/v2/yN8jExL8zpeSAT-d20KX1obM239S83Lc
 ```
+> ***untuk TOKEN_CONTRACT isi dengan contract token-mu yang sudah di deploy***
 
 
 ### 6. 📁 Siapkan file wallet `.csv`
+
+> cara membuatnya ketik command berikut :
+```
+nano wallets.csv
+```
 
 Buat file `wallets.csv` dengan format seperti ini:
 
