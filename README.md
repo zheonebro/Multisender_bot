@@ -22,7 +22,7 @@ Contoh :
 # 1. Update & install git + pip
 ```sudo apt update && sudo apt install -y git python3-pip```
 
-# 2. Clone repository (ganti URL jika pakai Git pribadi)
+# 2. Clone repository
 ```git clone https://github.com/zheonebro/Multisender_bot.git```
 
 ```cd multisender-bot```
