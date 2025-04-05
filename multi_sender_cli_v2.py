@@ -21,7 +21,7 @@ from rich.text import Text
 from rich import box
 import web3
 import schedule
-from web3.exceptions import TransactionNotFound, TransactionReplaced
+from web3.exceptions import TransactionNotFound
 
 # Init
 console = Console()
@@ -166,7 +166,7 @@ def log_balances():
 
         logger.info(f"📊 [bold]Token balance:[/bold] {token_balance:.4f} {TOKEN_NAME}")
         logger.info(f"⛽ [bold]TEA balance (untuk gas):[/bold] {eth_balance:.6f} TEA")
-        logger.info(f"🔢 [bold]Estimasi TX sisa:[/bold] {estimated_tx_possible} transaksi")
+        logger.info(f"🔗 [bold]Estimasi TX sisa:[/bold] {estimated_tx_possible} transaksi")
     except Exception as e:
         logger.error(f"[red]Gagal membaca balance: {e}[/red]")
 
@@ -244,7 +244,7 @@ def send_tokens():
                 'gasPrice': w3.eth.gas_price
             })
             signed = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-            tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
             logger.info(f"✅ Tx terkirim ke {to_address} | Hash: {tx_hash.hex()}")
             time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
         except Exception as e:
