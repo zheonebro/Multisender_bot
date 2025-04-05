@@ -50,7 +50,6 @@ decimals = token_contract.functions.decimals().call()
 
 nonce_lock = threading.Lock()
 
-
 def convert_addresses_to_checksum(input_file, output_file):
     try:
         with open(input_file, newline='') as infile, open(output_file, 'w', newline='') as outfile:
@@ -69,7 +68,6 @@ def convert_addresses_to_checksum(input_file, output_file):
     except Exception as e:
         console.print(f"[red]Gagal konversi checksum: {e}[/red]")
 
-
 def load_wallets(csv_file):
     valid_addresses = []
     try:
@@ -81,10 +79,8 @@ def load_wallets(csv_file):
         console.print(f"[red]Gagal membaca file: {e}[/red]")
     return valid_addresses
 
-
 def get_token_balance(address):
     return token_contract.functions.balanceOf(address).call() / (10 ** decimals)
-
 
 def send_token(to_address, amount):
     try:
@@ -97,21 +93,18 @@ def send_token(to_address, amount):
 
     tx_func = token_contract.functions.transfer(to_address, int(amount * (10 ** decimals)))
     gas_estimate = tx_func.estimate_gas({"from": SENDER_ADDRESS})
+    current_gas_price = w3.eth.gas_price
 
     tx = tx_func.build_transaction({
         'chainId': w3.eth.chain_id,
         'gas': gas_estimate,
-        'gasPrice': w3.to_wei(2.4, 'gwei'),
+        'gasPrice': current_gas_price,
         'nonce': nonce
     })
     signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    tx_hash = w3.eth.send_raw_transaction(
-        signed_tx.raw_transaction if hasattr(signed_tx, 'raw_transaction') else signed_tx.rawTransaction
-    )
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
     return w3.to_hex(tx_hash)
 
-
-# Fungsi kirim token ke semua alamat dalam CSV
 def send_tokens(csv_file, min_amount, max_amount):
     addresses = load_wallets(csv_file)
     if not addresses:
@@ -169,8 +162,6 @@ def send_tokens(csv_file, min_amount, max_amount):
 
     console.print(Panel(table, title="📬 Ringkasan Pengiriman", border_style="bright_blue"))
 
-
-# Penjadwalan pengiriman token
 def schedule_job(csv_file, min_amt, max_amt, schedule_time):
     def job():
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -186,9 +177,6 @@ def schedule_job(csv_file, min_amt, max_amt, schedule_time):
     while True:
         schedule.run_pending()
         time.sleep(10)
-
-
-# Fungsi utama
 
 def main():
     banner = Align.center("""
@@ -247,7 +235,6 @@ def main():
         while True:
             schedule.run_pending()
             time.sleep(10)
-
 
 if __name__ == "__main__":
     main()
