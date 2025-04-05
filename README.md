@@ -1,10 +1,15 @@
 # Multisender_bot
 
 1. Pengiriman token ke banyak address (dari file CSV)
+  
 2. Validasi & konversi checksum otomatis
+
 3. Pengiriman langsung atau terjadwal harian
+
 4.Tampilan CLI interaktif (dengan rich)
+
 5.Estimasi token yang dibutuhkan
+
 6. Logging transaksi & error
 
 
