@@ -21,7 +21,8 @@ load_dotenv()
 
 # Config
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
-SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
+RAW_SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
+SENDER_ADDRESS = web3.Web3.to_checksum_address(RAW_SENDER_ADDRESS)
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address("0xbB5b70Ac7e8CE2cA9afa044638CBb545713eC34F")
 CSV_FILE = "wallets_checksummed.csv"
