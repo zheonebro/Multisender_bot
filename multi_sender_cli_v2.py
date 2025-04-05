@@ -3,25 +3,16 @@ import os
 import random
 import time
 from datetime import datetime
-import traceback
 import threading
 import logging
 
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.prompt import Prompt
-from rich.table import Table
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
-from rich.align import Align
-from rich.logging import RichHandler
-from rich.layout import Layout
-from rich.live import Live
-from rich.text import Text
+from rich.progress import Progress
 from rich import box
 import web3
-import schedule
-from web3.exceptions import TransactionNotFound
 
 # Init
 console = Console()
@@ -48,7 +39,7 @@ logging.basicConfig(
     format="%(asctime)s %(message)s",
     datefmt="[%Y-%m-%d %H:%M:%S]",
     handlers=[
-        RichHandler(console=console, markup=True),
+        logging.StreamHandler(),
         logging.FileHandler(log_path, encoding="utf-8")
     ]
 )
@@ -180,6 +171,17 @@ def send_tokens():
     total_addresses = len(wallets_all)
     logger.info(f"🚀 **Token Transfer Started** 🚀")
     logger.info(f"--------------------------------")
+    
+    # Ambil saldo token sebelum pengiriman
+    token_balance_raw = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
+    token_balance = token_balance_raw / (10 ** decimals)
+    eth_balance_wei = w3.eth.get_balance(SENDER_ADDRESS)
+    eth_balance = w3.from_wei(eth_balance_wei, 'ether')
+
+    gas_price = w3.eth.gas_price
+    estimated_gas_per_tx = 50000
+    estimated_tx_possible = int(eth_balance_wei / (estimated_gas_per_tx * gas_price))
+
     logger.info(f"🕒 {datetime.now().strftime('%H:%M:%S')} → **Total Alamat**: {total_addresses}")
     logger.info(f"📊 **Token Balance**: {token_balance:.4f} {TOKEN_NAME}")
     logger.info(f"⛽ **TEA Balance**: {eth_balance:.6f} TEA (Enough for {estimated_tx_possible} transactions)")
@@ -202,11 +204,6 @@ def send_tokens():
             logger.info(f"🔄 **Sending Tokens to Address {i+1}:**")
             logger.info(f"💰 Amount: {amount / (10 ** decimals)} {TOKEN_NAME}")
             logger.info(f"🔗 Transaction Hash: `{tx_hash.hex()}`")
-            logger.info(f"⏳ **Waiting** for transaction to confirm...")
-            time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
-            logger.info(f"✅ **Transaction Successful!**")
-            logger.info(f"🕒 {datetime.now().strftime('%H:%M:%S')} → **Sent {amount / (10 ** decimals)} {TOKEN_NAME}** to Address {i+1}")
-            logger.info(f"🔗 **Transaction Hash**: `{tx_hash.hex()}`")
             logger.info(f"🧑‍💻 **Address**: `{to_address}`")
             logger.info(f"--------------------------------")
         except Exception as e:
@@ -216,8 +213,9 @@ def send_tokens():
                 time.sleep(60)
             else:
                 logger.error(f"❌ **Failed to send to {to_address}: {e}**")
+
     logger.info(f"🎉 **Batch Completed!**")
-    logger.info(f"🕒 {datetime.now().strftime('%H:%M:%S')} → **Total Sent Tokens**: {total_tokens_sent}")
+    logger.info(f"🕒 {datetime.now().strftime('%H:%M:%S')} → **Total Sent Tokens**: {token_balance - token_balance_raw / (10 ** decimals)}")
     logger.info(f"--------------------------------")
 
 # Main function
