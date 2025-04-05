@@ -3,6 +3,7 @@ import os
 import random
 import time
 from datetime import datetime
+import traceback
 
 from dotenv import load_dotenv
 from rich import print
@@ -95,7 +96,7 @@ def send_token(to_address, amount):
         'nonce': nonce
     })
     signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx['rawTransaction'])
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
     return w3.to_hex(tx_hash)
 
 def send_tokens(csv_file, min_amount, max_amount):
@@ -146,6 +147,8 @@ def send_tokens(csv_file, min_amount, max_amount):
                         log_message = f"[red][{datetime.now()}] ❌ Gagal kirim ke {address}: {e}[/red]"
                         console.print(log_message)
                         table.add_row(str(i), address, "-", f"❌ {e}")
+                        with open("logs.txt", "a") as log_file:
+                            log_file.write(traceback.format_exc())
                     else:
                         time.sleep(2)
             progress.update(task, advance=1)
