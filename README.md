@@ -3,7 +3,19 @@
 
 ***
 
+ada 3 Pilihan Send token 
 
+1. 1x kirim ke semua address
+2. 1x kirim diawal running bot + berikutnya terjadwal setiap hari jam 09.00
+3. 1x kirim terjadwal setiap hari jam 09.00
+
+# Gunakan Screen untuk jalankan otomatis setiap hari
+
+> buat screen dengan perintah berikut ini
+
+```
+screen -S multisender
+```
 
 
 # 🔁 ERC20 Token Multisender Bot
