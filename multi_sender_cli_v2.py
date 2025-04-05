@@ -47,6 +47,7 @@ ERC20_ABI = '''
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
 decimals = token_contract.functions.decimals().call()
 
+
 def convert_addresses_to_checksum(input_file, output_file):
     try:
         with open(input_file, newline='') as infile, open(output_file, 'w', newline='') as outfile:
@@ -65,6 +66,7 @@ def convert_addresses_to_checksum(input_file, output_file):
     except Exception as e:
         console.print(f"[red]Gagal konversi checksum: {e}[/red]")
 
+
 def load_wallets(csv_file):
     valid_addresses = []
     try:
@@ -76,8 +78,10 @@ def load_wallets(csv_file):
         console.print(f"[red]Gagal membaca file: {e}[/red]")
     return valid_addresses
 
+
 def get_token_balance(address):
     return token_contract.functions.balanceOf(address).call() / (10 ** decimals)
+
 
 def send_token(to_address, amount):
     try:
@@ -96,8 +100,9 @@ def send_token(to_address, amount):
         'nonce': nonce
     })
     signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
     return w3.to_hex(tx_hash)
+
 
 def send_tokens(csv_file, min_amount, max_amount):
     addresses = load_wallets(csv_file)
@@ -130,15 +135,15 @@ def send_tokens(csv_file, min_amount, max_amount):
                 try:
                     amount = round(random.uniform(min_amount, max_amount), 6)
 
-                    # Check balance before each send
                     balance = get_token_balance(SENDER_ADDRESS)
                     if balance < amount:
                         raise Exception("Saldo tidak mencukupi untuk transaksi ini")
 
                     tx_hash = send_token(address, amount)
-                    log_message = f"[green][{datetime.now()}] ✅ Sukses kirim {amount} token ke {address} | TX: {tx_hash}[/green]"
+                    tx_link = f"https://etherscan.io/tx/{tx_hash}"
+                    log_message = f"[green][{datetime.now()}] ✅ {amount} token ke {address} | [link={tx_link}]{tx_hash}[/link][/green]"
                     console.print(log_message)
-                    table.add_row(str(i), address, str(amount), f"✅ {tx_hash[:10]}...")
+                    table.add_row(str(i), address, str(amount), f"✅ [link={tx_link}]{tx_hash[:10]}...[/link]")
                     with open("logs.txt", "a") as log_file:
                         log_file.write(f"{datetime.now()} | {address} | {amount} | {tx_hash}\n")
                     break
@@ -154,6 +159,7 @@ def send_tokens(csv_file, min_amount, max_amount):
             progress.update(task, advance=1)
 
     console.print(Panel(table, title="📬 Ringkasan Pengiriman", border_style="bright_blue"))
+
 
 def schedule_job(csv_file, min_amt, max_amt, schedule_time):
     def job():
@@ -171,6 +177,7 @@ def schedule_job(csv_file, min_amt, max_amt, schedule_time):
         schedule.run_pending()
         time.sleep(10)
 
+
 def main():
     banner = Align.center("""
 ███╗   ███╗██╗   ██╗██╗██╗     ███████╗███████╗██████╗ 
@@ -182,7 +189,7 @@ def main():
 """, vertical="middle")
     console.print(banner, style="bold blue")
 
-    console.print("[bold cyan]=== BOT MULTISENDER ERC20 TERJADWAL ===[/bold cyan]", justify="center")
+    console.print("[bold cyan]=== BOT MULTISENDER ERC20 ===[/bold cyan]", justify="center")
     convert_addresses_to_checksum("wallets.csv", CSV_FILE)
 
     while True:
@@ -202,8 +209,33 @@ def main():
     console.print(f"[blue]📁 CSV Target: [white]{CSV_FILE}[/white][/blue]")
     console.print(f"[blue]🎯 Rentang Token: [white]{min_amt} - {max_amt}[/white][/blue]\n")
 
-    schedule_time = Prompt.ask("⏰ Masukkan waktu pengiriman harian berikutnya (format 24 jam HH:MM)", default="09:00")
-    schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
+    console.print("[bold green]Pilih mode pengiriman:[/bold green]")
+    console.print("[cyan][1][/cyan] Kirim Sekali (langsung)")
+    console.print("[cyan][2][/cyan] Kirim Sekarang + Terjadwal")
+    console.print("[cyan][3][/cyan] Hanya Terjadwal")
+
+    mode = Prompt.ask("📌 Pilihan Anda", choices=["1", "2", "3"], default="1")
+
+    if mode == "1":
+        console.print("[bold magenta]\n🚀 Pengiriman dimulai...[/bold magenta]")
+        send_tokens(CSV_FILE, min_amt, max_amt)
+    elif mode == "2":
+        schedule_time = Prompt.ask("⏰ Waktu pengiriman harian berikutnya (HH:MM)", default="09:00")
+        schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
+    elif mode == "3":
+        schedule_time = Prompt.ask("⏰ Waktu pengiriman harian (HH:MM)", default="09:00")
+        console.print(f"[yellow]⏳ Menunggu waktu terjadwal: {schedule_time}[/yellow]")
+
+        def job():
+            console.print("[bold magenta]\n🚀 Pengiriman terjadwal dimulai...[/bold magenta]")
+            send_tokens(CSV_FILE, min_amt, max_amt)
+
+        schedule.every().day.at(schedule_time).do(job)
+
+        while True:
+            schedule.run_pending()
+            time.sleep(10)
+
 
 if __name__ == "__main__":
     main()
