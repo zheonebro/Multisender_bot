@@ -45,28 +45,29 @@ if not w3.is_connected():
 # ERC20 ABI
 ERC20_ABI = [
     {
-        "constant": False,
         "inputs": [
-            {"name": "_to", "type": "address"},
-            {"name": "_value", "type": "uint256"},
+            {"internalType": "address", "name": "_to", "type": "address"},
+            {"internalType": "uint256", "name": "_value", "type": "uint256"}
         ],
         "name": "transfer",
-        "outputs": [{"name": "", "type": "bool"}],
-        "type": "function",
+        "outputs": [{"internalType": "bool", "name": "", "type": "bool"}],
+        "stateMutability": "nonpayable",
+        "type": "function"
     },
     {
-        "constant": True,
         "inputs": [],
         "name": "decimals",
-        "outputs": [{"name": "", "type": "uint8"}],
-        "type": "function",
+        "outputs": [{"internalType": "uint8", "name": "", "type": "uint8"}],
+        "stateMutability": "view",
+        "type": "function"
     },
     {
-        "constant": True,
-        "inputs": [{"name": "_owner", "type": "address"}],
+        "inputs": [{"internalType": "address", "name": "_owner", "type": "address"}],
         "name": "balanceOf",
-        "outputs": [{"name": "balance", "type": "uint256"}]
-    },
+        "outputs": [{"internalType": "uint256", "name": "balance", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
 ]
 
 # Contract
