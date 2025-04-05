@@ -15,12 +15,25 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from rich.align import Align
 from rich.logging import RichHandler
+from rich.layout import Layout
+from rich import box
 import web3
 import schedule
 
 # Init
 console = Console()
 load_dotenv()
+
+# Banner
+BANNER = """
+███████╗██████╗  ██████╗  ██████╗ ██████╗  ██████╗ ███╗   ██╗
+██╔════╝██╔══██╗██╔═══██╗██╔════╝ ██╔══██╗██╔═══██╗████╗  ██║
+█████╗  ██████╔╝██║   ██║██║  ███╗██████╔╝██║   ██║██╔██╗ ██║
+██╔══╝  ██╔══██╗██║   ██║██║   ██║██╔═══╝ ██║   ██║██║╚██╗██║
+███████╗██║  ██║╚██████╔╝╚██████╔╝██║     ╚██████╔╝██║ ╚████║
+╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝      ╚═════╝ ╚═╝  ╚═══╝
+"""
+console.print(Panel.fit(BANNER, title="[bold green]🚀 ERC20 Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
 
 # Setup logging
 log_dir = "runtime_logs"
@@ -41,10 +54,15 @@ logger = logging.getLogger("bot")
 # Config
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 RAW_SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
-SENDER_ADDRESS = web3.Web3.to_checksum_address(RAW_SENDER_ADDRESS)
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_RAW = os.getenv("TOKEN_CONTRACT")
 EXPLORER_URL = "https://sepolia.tea.xyz/"
+
+if not PRIVATE_KEY or not RAW_SENDER_ADDRESS or not RPC_URL:
+    logger.error("❌ PRIVATE_KEY, SENDER_ADDRESS, atau INFURA_URL tidak ditemukan di .env!")
+    exit()
+
+SENDER_ADDRESS = web3.Web3.to_checksum_address(RAW_SENDER_ADDRESS)
 
 DAILY_LIMIT_RAW = os.getenv("DAILY_LIMIT", "0")
 try:
@@ -52,15 +70,42 @@ try:
 except ValueError:
     DAILY_LIMIT = 0
 
-daily_sent_total = 0.0
-daily_lock = threading.Lock()
+DELAY_SECONDS = float(os.getenv("DELAY_SECONDS", "0.5"))
 
 if not TOKEN_CONTRACT_RAW:
     logger.error("❌ Environment variable 'TOKEN_CONTRACT' tidak ditemukan atau kosong!")
     exit()
 
 TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(TOKEN_CONTRACT_RAW)
-CSV_FILE = "wallets_checksummed.csv"
+
+# Pilih file CSV saat runtime
+def choose_csv_file():
+    files = [f for f in os.listdir('.') if f.endswith('.csv')]
+    if not files:
+        logger.error("❌ Tidak ada file CSV ditemukan di direktori saat ini.")
+        exit()
+
+    file_table = Table(title="📂 Pilih file CSV yang berisi wallet address", show_lines=True, box=box.SIMPLE_HEAVY)
+    file_table.add_column("No", justify="center")
+    file_table.add_column("File Name", style="cyan")
+
+    for idx, fname in enumerate(files, 1):
+        file_table.add_row(str(idx), fname)
+
+    console.print(file_table)
+
+    while True:
+        try:
+            choice = Prompt.ask("Masukkan nomor file yang ingin digunakan", default="1")
+            index = int(choice) - 1
+            if 0 <= index < len(files):
+                return files[index]
+            else:
+                console.print("[red]Nomor pilihan tidak valid. Coba lagi.[/red]")
+        except ValueError:
+            console.print("[red]Masukkan angka yang valid![/red]")
+
+CSV_FILE = choose_csv_file()
 
 # Connect Web3
 w3 = web3.Web3(web3.Web3.HTTPProvider(RPC_URL))
@@ -93,203 +138,118 @@ ERC20_ABI = [
         "outputs": [{"internalType": "uint256", "name": "balance", "type": "uint256"}],
         "stateMutability": "view",
         "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "name",
+        "outputs": [{"internalType": "string", "name": "", "type": "string"}],
+        "stateMutability": "view",
+        "type": "function"
     }
 ]
 
 # Contract
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
 decimals = token_contract.functions.decimals().call()
+TOKEN_NAME = token_contract.functions.name().call()
 
 nonce_lock = threading.Lock()
+daily_sent_total = 0.0
+daily_lock = threading.Lock()
 
-def convert_addresses_to_checksum(input_file, output_file):
-    try:
-        with open(input_file, newline='') as infile, open(output_file, 'w', newline='') as outfile:
-            reader = csv.DictReader(infile)
-            writer = csv.DictWriter(outfile, fieldnames=['address'])
-            writer.writeheader()
-            seen = set()
-            for row in reader:
-                try:
-                    checksummed = web3.Web3.to_checksum_address(row['address'].strip())
-                    if checksummed not in seen:
-                        seen.add(checksummed)
-                        writer.writerow({'address': checksummed})
-                except:
-                    continue
-    except Exception as e:
-        logger.error(f"Gagal konversi checksum: {e}")
+# Fungsi load wallet
 
 def load_wallets(csv_file):
     valid_addresses = []
-    try:
-        with open(csv_file, newline='') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                try:
-                    address = web3.Web3.to_checksum_address(row['address'].strip())
-                    valid_addresses.append(address)
-                except:
-                    continue
-    except Exception as e:
-        logger.error(f"Gagal membaca file: {e}")
+    with open(csv_file, newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                address = web3.Web3.to_checksum_address(row['address'].strip())
+                valid_addresses.append(address)
+            except:
+                continue
+    random.shuffle(valid_addresses)
     return valid_addresses
 
-def get_token_balance(address):
-    return token_contract.functions.balanceOf(address).call() / (10 ** decimals)
-
-def get_eth_balance(address):
-    return w3.eth.get_balance(address) / 10**18
+# Fungsi kirim token
 
 def send_token(to_address, amount):
-    try:
-        to_address = web3.Web3.to_checksum_address(to_address)
-    except:
-        raise ValueError("Alamat tidak valid")
-
+    to_address = web3.Web3.to_checksum_address(to_address)
     with nonce_lock:
         nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
 
-    try:
-        tx_func = token_contract.functions.transfer(to_address, int(amount * (10 ** decimals)))
-        gas_estimate = tx_func.estimate_gas({'from': SENDER_ADDRESS})
-        gas_price = w3.eth.gas_price
+    tx_func = token_contract.functions.transfer(to_address, int(amount * (10 ** decimals)))
+    gas_estimate = tx_func.estimate_gas({'from': SENDER_ADDRESS})
+    gas_price = w3.eth.gas_price
 
-        tx = tx_func.build_transaction({
-            'chainId': w3.eth.chain_id,
-            'gas': gas_estimate,
-            'gasPrice': gas_price,
-            'nonce': nonce
-        })
-    except Exception as e:
-        raise Exception(f"Gagal membangun transaksi: {e}")
+    tx = tx_func.build_transaction({
+        'chainId': w3.eth.chain_id,
+        'gas': gas_estimate,
+        'gasPrice': gas_price,
+        'nonce': nonce
+    })
 
-    try:
-        signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-        if not hasattr(signed_tx, 'rawTransaction'):
-            raise ValueError("SignedTransaction tidak memiliki 'rawTransaction'")
-        raw_tx = signed_tx.rawTransaction
-        tx_hash = w3.eth.send_raw_transaction(raw_tx)
-        return w3.to_hex(tx_hash)
-    except Exception as e:
-        raise Exception(f"Gagal menandatangani atau mengirim transaksi: {e}")
+    signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+    return w3.to_hex(tx_hash)
 
-def send_tokens(csv_file, min_amt, max_amt, count=None):
+# Kirim batch
+
+def send_batch(wallets, min_amt, max_amt):
     global daily_sent_total
+    logs = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
+        transient=True,
+        console=console
+    ) as progress:
+        task = progress.add_task("Mengirim token...", total=len(wallets))
 
-    addresses = load_wallets(csv_file)
-    if count:
-        addresses = random.sample(addresses, min(count, len(addresses)))
-
-    logger.info(f"📦 Total address untuk dikirim: {len(addresses)}")
-
-    log_lines = []
-    for i, address in enumerate(addresses, start=1):
-        try:
+        for i, wallet in enumerate(wallets, 1):
             amount = round(random.uniform(min_amt, max_amt), 6)
 
             with daily_lock:
-                if DAILY_LIMIT > 0 and daily_sent_total + amount > DAILY_LIMIT:
-                    logger.warning(f"🚫 Batas harian tercapai: {daily_sent_total:.4f} / {DAILY_LIMIT}")
+                if DAILY_LIMIT and daily_sent_total + amount > DAILY_LIMIT:
+                    logger.warning("⚠️ Batas harian tercapai.")
                     break
                 daily_sent_total += amount
 
-            tx_hash = send_token(address, amount)
-            tx_short = tx_hash[:10]
-            link = f"[link={EXPLORER_URL}{tx_hash}]{tx_short}...[/link]"
-            token_bal = get_token_balance(SENDER_ADDRESS)
-            eth_bal = get_eth_balance(SENDER_ADDRESS)
-            log = f"{i}. [green]{address}[/green] ✅ {amount:.4f} | Token: [bold]{token_bal:.4f}[/bold] | TEA: [bold]{eth_bal:.4f}[/bold] | TX: {link}"
-            console.print(log)
-            logger.info(log)
-            log_lines.append(log)
-            time.sleep(random.uniform(0.5, 1.2))
-        except Exception as e:
-            log = f"{i}. [red]{address}[/red] ❌ ERROR: {str(e)}"
-            console.print(log)
-            logger.error(log)
-            log_lines.append(log)
+            try:
+                tx_hash = send_token(wallet, amount)
+                log = f"[green]{i}. {wallet} ✅ {amount} {TOKEN_NAME} | TX: {tx_hash}[/green]"
+                logger.info(log)
+            except Exception as e:
+                log = f"[red]{i}. {wallet} ❌ Gagal: {e}[/red]"
+                logger.error(log)
 
-    panel = Panel("\n".join(log_lines), title="📬 Ringkasan Pengiriman", border_style="bright_blue")
-    sisa_token = get_token_balance(SENDER_ADDRESS)
-    sisa_eth = get_eth_balance(SENDER_ADDRESS)
+            logs.append(log)
+            progress.update(task, advance=1)
+            time.sleep(DELAY_SECONDS)
+
+    panel = Panel("\n".join(logs), title="📤 Hasil Pengiriman", border_style="bright_magenta")
     console.print(panel)
-    logger.info(f"✅ Sisa Token: {sisa_token:.4f} | Sisa TEA: {sisa_eth:.4f} | Terkirim hari ini: {daily_sent_total:.4f}")
 
-    try:
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        os.makedirs("logs", exist_ok=True)
-        log_file = os.path.join("logs", f"{timestamp}_log.txt")
-        with open(log_file, "w", encoding="utf-8") as f:
-            for line in log_lines:
-                f.write(f"{line}\n")
-        logger.info(f"📝 Log disimpan di: {log_file}")
-    except Exception as e:
-        logger.error(f"❌ Gagal menyimpan log: {e}")
+# Menu interaktif
 
-def reset_daily_total():
-    global daily_sent_total
-    with daily_lock:
-        daily_sent_total = 0.0
-    logger.info("🔄 Batas harian direset ke 0")
+def interactive_menu():
+    wallets = load_wallets(CSV_FILE)
+    if not wallets:
+        console.print("[red]Tidak ada address valid dalam file![/red]")
+        return
 
-schedule.every().day.at("00:00").do(reset_daily_total)
+    min_amt = float(Prompt.ask("💰 Jumlah minimum token", default="1"))
+    max_amt = float(Prompt.ask("💰 Jumlah maksimum token", default="5"))
+    count = Prompt.ask("📌 Jumlah address untuk dikirim (kosongkan untuk semua)", default="")
+    count = int(count) if count.strip().isdigit() else len(wallets)
 
-def run_scheduler_loop():
-    while True:
-        schedule.run_pending()
-        time.sleep(5)
-
-def schedule_job(csv_file, min_amt, max_amt, schedule_time):
-    def job():
-        logger.info("\n🚀 Mengirim token ke 150 address acak...")
-        send_tokens(csv_file, min_amt, max_amt, count=150)
-
-    logger.info("⏳ Menunggu waktu terjadwal...")
-    schedule.every().day.at(schedule_time).do(job)
-
-    while True:
-        schedule.run_pending()
-        time.sleep(5)
-
-def run_bot():
-    threading.Thread(target=run_scheduler_loop, daemon=True).start()
-
-    banner = Align.center("""
-███╗   ███╗██╗   ██╗██╗██╗     ███████╗███████╗██████╗ 
-████╗ ████║██║   ██║██║██║     ██╔════╝██╔════╝██╔══██╗
-██╔████╔██║██║   ██║██║██║     █████╗  █████╗  ██║  ██║
-██║╚██╔╝██║██║   ██║██║██║     ██╔══╝  ██╔══╝  ██║  ██║
-██║ ╚═╝ ██║╚██████╔╝██║███████╗███████╗███████╗██████╔╝
-╚═╝     ╚═╝ ╚═════╝ ╚═╝╚══════╝╚══════╝╚══════╝╚═════╝ 
-""", vertical="middle")
-    console.print(banner, style="bold blue")
-
-    convert_addresses_to_checksum("wallets.csv", CSV_FILE)
-
-    min_amt = float(Prompt.ask("🔢 Jumlah MIN token", default="5"))
-    max_amt = float(Prompt.ask("🔢 Jumlah MAX token", default="20"))
-    address_count = Prompt.ask("📦 Berapa jumlah address yang ingin dikirim? Tekan Enter untuk semua", default="")
-    count = int(address_count) if address_count.strip().isdigit() else None
-
-    console.print("\n[bold green]Pilih mode pengiriman:[/bold green]")
-    console.print("[cyan][1][/cyan] Kirim Sekali (langsung)")
-    console.print("[cyan][2][/cyan] Kirim Sekarang + Terjadwal")
-    console.print("[cyan][3][/cyan] Hanya Terjadwal (uji 10 address dulu)")
-
-    mode = Prompt.ask("📌 Pilihan Anda", choices=["1", "2", "3"], default="1")
-
-    if mode == "1":
-        send_tokens(CSV_FILE, min_amt, max_amt, count=count)
-    elif mode == "2":
-        schedule_time = Prompt.ask("⏰ Jadwal harian berikutnya (HH:MM)", default="09:00")
-        send_tokens(CSV_FILE, min_amt, max_amt, count=count)
-        schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
-    elif mode == "3":
-        logger.info("🔍 Pengujian: Kirim ke 10 address acak...")
-        send_tokens(CSV_FILE, min_amt, max_amt, count=10)
-        schedule_time = Prompt.ask("⏰ Jadwal pengiriman (HH:MM)", default="09:00")
-        schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
+    selected_wallets = wallets[:count]
+    send_batch(selected_wallets, min_amt, max_amt)
 
 if __name__ == "__main__":
-    run_bot()
+    interactive_menu()
+
