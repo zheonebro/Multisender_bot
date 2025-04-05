@@ -159,13 +159,13 @@ def log_balances():
         estimated_gas_per_tx = 50000
         estimated_tx_possible = int(eth_balance_wei / (estimated_gas_per_tx * gas_price))
 
-        logger.info(f"📊 [bold]Token balance:[/bold] {token_balance:.4f} {TOKEN_NAME}")
-        logger.info(f"⛽ [bold]TEA balance (untuk gas):[/bold] {eth_balance:.6f} TEA")
-        logger.info(f"🔗 [bold]Estimasi TX sisa:[/bold] {estimated_tx_possible} transaksi")
+        logger.info(f"[bold green]📊 Token balance:[/bold green] {token_balance:.4f} {TOKEN_NAME}")
+        logger.info(f"[bold yellow]⛽ TEA balance (untuk gas):[/bold yellow] {eth_balance:.6f} TEA")
+        logger.info(f"[cyan]🔗 Estimasi TX sisa:[/cyan] {estimated_tx_possible} transaksi")
     except Exception as e:
-        logger.error(f"[red]Gagal membaca balance: {e}[/red]")
+        logger.error(f"[red]❌ Gagal membaca balance: {e}[/red]")
 
-# Fungsi tampilkan log online berjalan tanpa tabel
+# Fungsi tampilkan log online berjalan tanpa tabel, dengan format lebih menarik
 
 def show_log_live():
     log_file = os.path.join("runtime_logs", "runtime.log")
@@ -182,7 +182,15 @@ def show_log_live():
                 for line in lines:
                     try:
                         timestamp, msg = line.strip().split(" ", 1)
-                        console.print(f"[dim]{timestamp}[/dim] {msg}")
+                        # Format log dengan warna dan emoji untuk meningkatkan daya tarik
+                        if "✅" in msg:
+                            console.print(f"[green]{timestamp}[/green] [bold green]✅ {msg}[/bold green]")
+                        elif "⚠️" in msg:
+                            console.print(f"[yellow]{timestamp}[/yellow] [bold yellow]⚠️ {msg}[/bold yellow]")
+                        elif "❌" in msg:
+                            console.print(f"[red]{timestamp}[/red] [bold red]❌ {msg}[/bold red]")
+                        else:
+                            console.print(f"[dim]{timestamp}[/dim] {msg}")
                     except:
                         continue
                 time.sleep(3)
@@ -215,12 +223,12 @@ def send_tokens():
         try:
             # Generate token amount between 10 and 100
             amount = random.randint(10, 100) * (10 ** decimals)
-
-            # Check RPC limit before sending
-            if not check_rpc_limit():
-                return
-
             nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
+
+            # Check RPC limit before proceeding
+            if not check_rpc_limit():
+                continue
+
             tx = token_contract.functions.transfer(to_address, amount).build_transaction({
                 'from': SENDER_ADDRESS,
                 'nonce': nonce,
@@ -247,12 +255,9 @@ def start_scheduler():
         schedule.run_pending()
         time.sleep(1)
 
-# Menu interaktif (opsional manual)
+# Main function
 
-def interactive_menu():
+if __name__ == "__main__":
     log_balances()
     threading.Thread(target=start_scheduler, daemon=True).start()
     show_log_live()
-
-if __name__ == "__main__":
-    interactive_menu()
