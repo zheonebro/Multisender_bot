@@ -45,13 +45,20 @@ token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
 decimals = token_contract.functions.decimals().call()
 
 def load_wallets(csv_file):
+    valid_addresses = []
     try:
         with open(csv_file, newline='') as f:
             reader = csv.DictReader(f)
-            return [Web3.to_checksum_address(row['address']) for row in reader]
+            for row in reader:
+                address = row['address'].strip()
+                try:
+                    checksummed = Web3.to_checksum_address(address)
+                    valid_addresses.append(checksummed)
+                except Exception as e:
+                    console.print(f"[yellow]⚠️ Alamat tidak valid dilewati: {address}[/yellow]")
     except Exception as e:
         console.print(f"[red]Gagal membaca file: {e}[/red]")
-        return []
+    return valid_addresses
 
 def send_token(to_address, amount):
     try:
@@ -66,7 +73,7 @@ def send_token(to_address, amount):
     ).build_transaction({
         'chainId': w3.eth.chain_id,
         'gas': 100000,
-        'gasPrice': w3.eth.gas_price,
+        'gasPrice': w3.to_wei(2.4, 'gwei'),  # Set gas price secara manual
         'nonce': nonce
     })
     signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
