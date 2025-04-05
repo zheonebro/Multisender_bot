@@ -31,6 +31,9 @@ Contoh :
 ```pip3 install -r requirements.txt```
 
 ====================================================================================
+
+
+
 Agar program PIP3 tidak bentrok dengan yang lain lakukan perintah berikut :
 # I. Pastikan pip & venv tersedia
 ```sudo apt install python3-pip python3-venv -y```
