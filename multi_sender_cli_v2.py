@@ -106,7 +106,7 @@ def send_token(to_address, amount):
         'nonce': nonce
     })
     signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
     return w3.to_hex(tx_hash)
 
 def send_tokens(csv_file, min_amount, max_amount):
