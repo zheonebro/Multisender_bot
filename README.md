@@ -84,15 +84,20 @@ MAX_DELAY_SECONDS=2
 
 📌 **Cara Membuat File `.env` di VPS (Linux)**
 ```bash
-echo "PRIVATE_KEY=0x..." > .env
-echo "SENDER_ADDRESS=0x..." >> .env
-echo "INFURA_URL=https://eth-sepolia.g.alchemy.com/v2/..." >> .env
-echo "TOKEN_CONTRACT=0x..." >> .env
-echo "MAX_GAS_PRICE_GWEI=50" >> .env
-echo "DAILY_LIMIT=0" >> .env
-echo "MIN_DELAY_SECONDS=0.5" >> .env
-echo "MAX_DELAY_SECONDS=2" >> .env
+nano .env
 ```
+Lalu isi seperti ini:
+```ini
+PRIVATE_KEY=0xPRIVATEKEY_KAMU
+SENDER_ADDRESS=0xALAMAT_KAMU
+INFURA_URL=https://eth-sepolia.g.alchemy.com/v2/YOUR_ALCHEMY_API_KEY
+TOKEN_CONTRACT=0xKONTRAK_TOKEN_KAMU
+MAX_GAS_PRICE_GWEI=50
+DAILY_LIMIT=0
+MIN_DELAY_SECONDS=0.5
+MAX_DELAY_SECONDS=2
+```
+Tekan `CTRL+X`, lalu `Y`, lalu `Enter` untuk menyimpan.
 
 ### 🔌 Cara Mendapatkan URL RPC TEA Sepolia dari Alchemy
 
@@ -146,12 +151,17 @@ address
 0x789abc...
 ```
 
-📌 Cara membuat `wallets.csv` di VPS:
+📌 **Cara membuat `wallets.csv` di VPS:**
 ```bash
-echo "address" > wallets.csv
-echo "0xabc123..." >> wallets.csv
-echo "0xdef456..." >> wallets.csv
+nano wallets.csv
 ```
+Lalu isi seperti ini:
+```csv
+address
+0xabc123...
+0xdef456...
+```
+Tekan `CTRL+X`, lalu `Y`, lalu `Enter` untuk menyimpan.
 
 File ini akan dibaca dan dikirimkan token ke semua address di dalamnya.
 
