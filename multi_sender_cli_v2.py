@@ -14,6 +14,7 @@ from rich import box
 import web3
 import tenacity
 import schedule
+from tqdm import tqdm
 
 # Init
 console = Console()
@@ -65,6 +66,8 @@ try:
     DAILY_LIMIT = float(DAILY_LIMIT_RAW)
 except ValueError:
     DAILY_LIMIT = 0
+
+daily_sent_total = 0
 
 MIN_DELAY_SECONDS = float(os.getenv("MIN_DELAY_SECONDS", "0.5"))
 MAX_DELAY_SECONDS = float(os.getenv("MAX_DELAY_SECONDS", "2"))
@@ -160,6 +163,17 @@ def load_wallets(csv_file):
 
 wallets_all = load_wallets(CSV_FILE)
 
+# 🔁 Reset otomatis sent_wallets.txt setiap hari
+
+def reset_sent_wallets():
+    global daily_sent_total
+    try:
+        open(SENT_FILE, 'w').close()
+        daily_sent_total = 0
+        logger.info("🗑️ File sent_wallets.txt telah direset (dikosongkan).")
+    except Exception as e:
+        logger.error(f"❌ Gagal mereset sent_wallets.txt: {e}")
+
 # Monitoring balance
 def log_balances():
     try:
@@ -202,10 +216,14 @@ MIN_TOKEN = 5
 MAX_TOKEN = 50
 
 def process_batch(addresses_batch, batch_id):
-    global global_nonce
-    for i, to_address in enumerate(addresses_batch):
+    global global_nonce, daily_sent_total
+    for i, to_address in enumerate(tqdm(addresses_batch, desc=f"BATCH {batch_id}")):
         try:
             token_amount = random.randint(MIN_TOKEN, MAX_TOKEN)
+            if DAILY_LIMIT > 0 and (daily_sent_total + token_amount) > DAILY_LIMIT:
+                logger.warning(f"[BATCH {batch_id}] ⚠️ Batas harian tercapai, menghentikan pengiriman.")
+                return
+
             amount = token_amount * (10 ** decimals)
             with nonce_lock:
                 nonce = global_nonce
@@ -218,9 +236,14 @@ def process_batch(addresses_batch, batch_id):
                 })
                 tx_hash = safe_send_transaction(tx)
 
-            logger.info(f"[BATCH {batch_id}] ✅ Sent {token_amount} {TOKEN_NAME} to {to_address}")
-            logger.info(f"[TX] https://sepolia.tea.xyz/tx/{tx_hash.hex()}")
-            save_sent_wallet(to_address)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            if receipt.status == 1:
+                logger.info(f"[BATCH {batch_id}] ✅ Sent {token_amount} {TOKEN_NAME} to {to_address}")
+                logger.info(f"[TX SUCCESS] {EXPLORER_URL}tx/{tx_hash.hex()}")
+                save_sent_wallet(to_address)
+                daily_sent_total += token_amount
+            else:
+                logger.error(f"[BATCH {batch_id}] ❌ TX FAILED {EXPLORER_URL}tx/{tx_hash.hex()}")
         except Exception as e:
             logger.error(f"[BATCH {batch_id}] ❌ Failed to send to {to_address}: {e}")
 
@@ -239,78 +262,42 @@ def run_sending():
 
     batches = [wallets[i:i+BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
 
-    with ThreadPoolExecutor(max_workers=THREAD_WORKERS) as executor:
-        for idx, batch in enumerate(batches):
-            executor.submit(process_batch, batch, idx+1)
-            logger.info(f"🛌 Menunggu selama {IDLE_AFTER_BATCH_SECONDS} detik sebelum batch berikutnya...")
-            for remaining in range(IDLE_AFTER_BATCH_SECONDS, 0, -1):
-                logger.info(f"⏸ Idle... {remaining} detik tersisa")
-                time.sleep(1)
+    try:
+        with ThreadPoolExecutor(max_workers=THREAD_WORKERS) as executor:
+            for idx, batch in enumerate(batches):
+                executor.submit(process_batch, batch, idx+1)
+                logger.info(f"🛌 Menunggu selama {IDLE_AFTER_BATCH_SECONDS} detik sebelum batch berikutnya...")
+                for remaining in range(IDLE_AFTER_BATCH_SECONDS, 0, -1):
+                    logger.info(f"⏸ Idle... {remaining} detik tersisa")
+                    time.sleep(1)
+    except KeyboardInterrupt:
+        logger.warning("⛔ Pengguna menghentikan proses. Menutup dengan aman...")
 
-# CLI
+# Interaktif menu
 
 def interactive_menu():
-    global MIN_TOKEN, MAX_TOKEN
     while True:
-        console.print("\n[bold yellow]Menu:[/bold yellow]", style="bold cyan")
-        console.print("[1] Mulai kirim token sekarang")
-        console.print(f"[2] Atur rentang jumlah token (sekarang: {MIN_TOKEN}-{MAX_TOKEN})")
-        console.print("[3] Jadwalkan pengiriman harian otomatis")
-        console.print("[4] Uji coba kirim ke beberapa address random")
-        console.print("[5] Keluar")
+        console.print("\n[bold cyan]📋 MENU UTAMA[/bold cyan]")
+        console.print("1. Kirim token sekarang")
+        console.print("2. Lihat saldo")
+        console.print("3. Reset daftar yang sudah dikirim")
+        console.print("4. Keluar")
 
-        choice = input(">>> Pilih opsi: ").strip()
+        pilihan = input("Pilih opsi (1-4): ").strip()
 
-        if choice == "1":
+        if pilihan == "1":
             run_sending()
-        elif choice == "2":
-            try:
-                min_val = input("Masukkan jumlah token minimum [default 5]: ") or "5"
-                max_val = input("Masukkan jumlah token maksimum [default 50]: ") or "50"
-                MIN_TOKEN = max(1, int(min_val))
-                MAX_TOKEN = max(MIN_TOKEN, int(max_val))
-                logger.info(f"Rentang token diatur: {MIN_TOKEN}-{MAX_TOKEN}")
-            except ValueError:
-                logger.error("Input tidak valid. Harus berupa angka.")
-        elif choice == "3":
-            waktu = input("Masukkan waktu pengiriman harian (24 jam, contoh 14:00): ").strip()
-            schedule.every().day.at(waktu).do(run_sending)
-            logger.info(f"✅ Pengiriman otomatis dijadwalkan setiap hari jam {waktu}")
-            while True:
-                schedule.run_pending()
-                time.sleep(1)
-        elif choice == "4":
-            test_addresses = load_wallets(CSV_FILE)
-            if not test_addresses:
-                logger.warning("Tidak ada address yang tersedia untuk uji coba.")
-            else:
-                sample_addresses = random.sample(test_addresses, min(5, len(test_addresses)))
-                logger.info("🔁 Test kirim token ke beberapa address acak:")
-                for addr in sample_addresses:
-                    logger.info(f"- {addr}")
-
-                for addr in sample_addresses:
-                    try:
-                        token_amount = random.randint(MIN_TOKEN, MAX_TOKEN)
-                        amount = token_amount * (10 ** decimals)
-                        nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
-                        tx = token_contract.functions.transfer(addr, amount).build_transaction({
-                            'from': SENDER_ADDRESS,
-                            'nonce': nonce,
-                            'gas': 60000,
-                            'gasPrice': min(w3.eth.gas_price, w3.to_wei(MAX_GAS_PRICE_GWEI, 'gwei'))
-                        })
-                        signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-                        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-                        logger.info(f"✅ [Test TX] Kirim {token_amount} {TOKEN_NAME} ke {addr} → TX: {tx_hash.hex()}")
-                    except Exception as e:
-                        logger.error(f"❌ Gagal mengirim token uji ke {addr}: {e}")
-
-        elif choice == "5":
-            logger.info("👋 Keluar dari program.")
+        elif pilihan == "2":
+            log_balances()
+        elif pilihan == "3":
+            reset_sent_wallets()
+        elif pilihan == "4":
+            print("👋 Keluar...")
             break
         else:
-            logger.warning("Opsi tidak dikenal. Coba lagi.")
+            print("❌ Pilihan tidak valid!")
+
+# CLI
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -320,6 +307,10 @@ if __name__ == "__main__":
     if args.auto:
         logger.info("[AUTO MODE] Bot akan terus mengirim batch secara otomatis.")
         schedule.every(IDLE_AFTER_BATCH_SECONDS).seconds.do(run_sending)
+
+        # 🔁 Tambahkan jadwal reset harian
+        schedule.every().day.at("00:00").do(reset_sent_wallets)
+
         run_sending()
         while True:
             schedule.run_pending()
