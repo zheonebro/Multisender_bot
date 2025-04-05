@@ -6,9 +6,9 @@
 
 3. Pengiriman langsung atau terjadwal harian
 
-4.Tampilan CLI interaktif (dengan rich)
+4. Tampilan CLI interaktif (dengan rich)
 
-5.Estimasi token yang dibutuhkan
+5. Estimasi token yang dibutuhkan
 
 6. Logging transaksi & error
 
