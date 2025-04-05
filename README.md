@@ -30,6 +30,9 @@ Contoh :
 # 3. Install library yang dibutuhkan
 ```pip3 install -r requirements.txt```
 
+
+
+
 ====================================================================================
 
 
@@ -50,6 +53,7 @@ Setelah ini, prompt kamu akan berubah jadi seperti ini:
 
 
 =====================================================================================
+
 
 
 2. Konfigurasi .env
