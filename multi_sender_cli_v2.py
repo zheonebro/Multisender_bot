@@ -24,7 +24,7 @@ PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_ADDRESS = Web3.to_checksum_address("0xbB5b70Ac7e8CE2cA9afa044638CBb545713eC34F")
-CSV_FILE = "wallets.csv"
+CSV_FILE = "wallets_checksummed.csv"
 
 # Connect Web3
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
@@ -68,12 +68,7 @@ def load_wallets(csv_file):
         with open(csv_file, newline='') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                address = row['address'].strip()
-                try:
-                    checksummed = Web3.to_checksum_address(address)
-                    valid_addresses.append(checksummed)
-                except Exception:
-                    console.print(f"[yellow]⚠️ Alamat tidak valid dilewati: {address}[/yellow]")
+                valid_addresses.append(row['address'].strip())
     except Exception as e:
         console.print(f"[red]Gagal membaca file: {e}[/red]")
     return valid_addresses
@@ -91,7 +86,7 @@ def send_token(to_address, amount):
     ).build_transaction({
         'chainId': w3.eth.chain_id,
         'gas': 100000,
-        'gasPrice': w3.to_wei(2.4, 'gwei'),  # Set gas price secara manual
+        'gasPrice': w3.to_wei(2.4, 'gwei'),
         'nonce': nonce
     })
     signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
@@ -166,7 +161,7 @@ def main():
     console.print(banner, style="bold blue")
 
     console.print("[bold cyan]=== BOT MULTISENDER ERC20 TERJADWAL ===[/bold cyan]", justify="center")
-    convert_addresses_to_checksum(CSV_FILE, "wallets_checksummed.csv")
+    convert_addresses_to_checksum("wallets.csv", CSV_FILE)
 
     min_amt = float(Prompt.ask("🔢 Jumlah MIN token", default="5"))
     max_amt = float(Prompt.ask("🔢 Jumlah MAX token", default="20"))
@@ -176,7 +171,7 @@ def main():
     console.print(f"[blue]🎯 Rentang Token: [white]{min_amt} - {max_amt}[/white][/blue]\n")
 
     schedule_time = Prompt.ask("⏰ Masukkan waktu pengiriman harian berikutnya (format 24 jam HH:MM)", default="09:00")
-    schedule_job("wallets_checksummed.csv", min_amt, max_amt, schedule_time)
+    schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
 
 if __name__ == "__main__":
     main()
