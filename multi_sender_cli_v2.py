@@ -16,9 +16,12 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeEl
 from rich.align import Align
 from rich.logging import RichHandler
 from rich.layout import Layout
+from rich.live import Live
+from rich.text import Text
 from rich import box
 import web3
 import schedule
+from web3.exceptions import TransactionNotFound, TransactionReplaced
 
 # Init
 console = Console()
@@ -167,7 +170,35 @@ def log_balances():
     except Exception as e:
         logger.error(f"[red]Gagal membaca balance: {e}[/red]")
 
-# Fungsi tampilkan log online
+# Fungsi tampilkan log online berjalan
+
+def show_log_live():
+    log_file = os.path.join("runtime_logs", "runtime.log")
+    if not os.path.exists(log_file):
+        console.print("[red]Log file tidak ditemukan.[/red]")
+        return
+
+    with Live(console=console, refresh_per_second=1):
+        try:
+            while True:
+                with open(log_file, "r", encoding="utf-8") as f:
+                    lines = f.readlines()[-20:]
+                table = Table(title="📜 Log Runtime Berjalan", show_header=True, header_style="bold cyan")
+                table.add_column("Waktu", style="dim")
+                table.add_column("Pesan")
+                for line in lines:
+                    try:
+                        timestamp, msg = line.strip().split(" ", 1)
+                        table.add_row(timestamp, msg)
+                    except:
+                        continue
+                console.print(table)
+                time.sleep(3)
+                console.clear()
+        except KeyboardInterrupt:
+            return
+
+# Fungsi tampilkan log sekali saja
 
 def show_log():
     log_file = os.path.join("runtime_logs", "runtime.log")
@@ -176,7 +207,7 @@ def show_log():
         return
 
     with open(log_file, "r", encoding="utf-8") as f:
-        lines = f.readlines()[-20:]  # tampilkan 20 log terakhir
+        lines = f.readlines()[-20:]
 
     table = Table(title="📜 Log Terbaru", show_header=True, header_style="bold cyan")
     table.add_column("Waktu", style="dim")
@@ -191,101 +222,59 @@ def show_log():
 
     console.print(table)
 
-# Fungsi kirim token
+# Fungsi kirim token acak dengan adaptive delay
 
-def send_token(to_address, amount):
-    to_address = web3.Web3.to_checksum_address(to_address)
-    with nonce_lock:
-        nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
-
-    tx_func = token_contract.functions.transfer(to_address, int(amount * (10 ** decimals)))
-    gas_estimate = tx_func.estimate_gas({'from': SENDER_ADDRESS})
-    gas_price = w3.eth.gas_price
-
-    tx = tx_func.build_transaction({
-        'chainId': w3.eth.chain_id,
-        'gas': gas_estimate,
-        'gasPrice': gas_price,
-        'nonce': nonce
-    })
-
-    signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-    return w3.to_hex(tx_hash)
-
-# Kirim batch
-
-def send_batch(wallets, min_amt, max_amt):
-    global daily_sent_total
-    logs = []
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("{task.completed}/{task.total}"),
-        TimeElapsedColumn(),
-        transient=True,
-        console=console
-    ) as progress:
-        task = progress.add_task("Mengirim token...", total=len(wallets))
-
-        for i, wallet in enumerate(wallets, 1):
-            amount = round(random.uniform(min_amt, max_amt), 6)
-
-            with daily_lock:
-                if DAILY_LIMIT and daily_sent_total + amount > DAILY_LIMIT:
-                    logger.warning("⚠️ Batas harian tercapai.")
-                    break
-                daily_sent_total += amount
-
-            try:
-                tx_hash = send_token(wallet, amount)
-                log = f"[green]{i}. {wallet} ✅ {amount} {TOKEN_NAME} | TX: {tx_hash}[/green]"
-                logger.info(log)
-            except Exception as e:
-                log = f"[red]{i}. {wallet} ❌ Gagal: {e}[/red]"
-                logger.error(log)
-
-            logs.append(log)
-            progress.update(task, advance=1)
-            time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
-
-    panel = Panel("\n".join(logs), title="📤 Hasil Pengiriman", border_style="bright_magenta")
-    console.print(panel)
-
-# Penjadwalan otomatis tiap jam
-
-def scheduled_send():
+def send_tokens():
     if not wallets_all:
-        logger.warning("📛 Tidak ada address untuk dikirim.")
+        logger.warning("❗ Daftar wallet kosong.")
         return
 
-    log_balances()
+    random.shuffle(wallets_all)
+    total = len(wallets_all)
+    logger.info(f"🚀 Mulai pengiriman batch ke {total} wallet...")
 
-    batch_size = max(1, len(wallets_all) // 24)
-    selected_wallets = random.sample(wallets_all, batch_size)
-    logger.info(f"⏰ Menjalankan pengiriman batch otomatis ke {batch_size} address...")
-    send_batch(selected_wallets, 1.0, 5.0)
+    for i, to_address in enumerate(wallets_all):
+        try:
+            amount = 1 * (10 ** decimals)
+            nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
+            tx = token_contract.functions.transfer(to_address, amount).build_transaction({
+                'from': SENDER_ADDRESS,
+                'nonce': nonce,
+                'gas': 60000,
+                'gasPrice': w3.eth.gas_price
+            })
+            signed = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+            tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+            logger.info(f"✅ Tx terkirim ke {to_address} | Hash: {tx_hash.hex()}")
+            time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
+        except Exception as e:
+            if "too many requests" in str(e).lower():
+                logger.warning("⚠️ Terkena limit RPC. Menunggu 60 detik...")
+                time.sleep(60)
+            else:
+                logger.error(f"❌ Gagal kirim ke {to_address}: {e}")
 
-schedule.every().hour.at(":00").do(scheduled_send)
+# Penjadwalan pengiriman token setiap jam
 
-# Thread untuk scheduler
-
-def run_scheduler():
+def start_scheduler():
+    schedule.every().hour.do(send_tokens)
+    logger.info("⏰ Penjadwalan pengiriman token setiap jam telah dimulai.")
     while True:
         schedule.run_pending()
-        time.sleep(5)
-
-threading.Thread(target=run_scheduler, daemon=True).start()
+        time.sleep(1)
 
 # Menu interaktif (opsional manual)
 
 def interactive_menu():
+    log_balances()
+    threading.Thread(target=start_scheduler, daemon=True).start()
     console.print("[cyan]Bot aktif. Pengiriman otomatis dijadwalkan setiap jam.[/cyan]")
     while True:
-        action = Prompt.ask("\n[bold yellow]Perintah[/bold yellow] ([green]log[/green]/[red]exit[/red])", default="exit")
+        action = Prompt.ask("\n[bold yellow]Perintah[/bold yellow] ([green]log[/green]/[magenta]live[/magenta]/[red]exit[/red])", default="exit")
         if action == "log":
             show_log()
+        elif action == "live":
+            show_log_live()
         elif action == "exit":
             break
 
