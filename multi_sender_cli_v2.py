@@ -109,8 +109,15 @@ CSV_FILE = choose_csv_file()
 
 # Connect Web3
 w3 = web3.Web3(web3.Web3.HTTPProvider(RPC_URL))
-if not w3.is_connected():
-    logger.error("❌ Gagal terhubung ke jaringan! Cek RPC URL")
+try:
+    if not w3.is_connected():
+        raise ConnectionError("Gagal terhubung ke RPC")
+    _ = w3.eth.chain_id
+except Exception as e:
+    if "too many requests" in str(e).lower() or "429" in str(e):
+        logger.error("🚫 Terkena rate limit dari RPC provider (429 Too Many Requests)")
+    else:
+        logger.error(f"❌ Gagal terhubung ke jaringan! Detail: {e}")
     exit()
 
 # ERC20 ABI
@@ -172,27 +179,39 @@ def load_wallets(csv_file):
     random.shuffle(valid_addresses)
     return valid_addresses
 
-# Fungsi kirim token
+# Fungsi kirim token dengan retry saat rate limit
 
-def send_token(to_address, amount):
+def send_token(to_address, amount, retries=3):
     to_address = web3.Web3.to_checksum_address(to_address)
-    with nonce_lock:
-        nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
+    for attempt in range(retries):
+        try:
+            with nonce_lock:
+                nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
 
-    tx_func = token_contract.functions.transfer(to_address, int(amount * (10 ** decimals)))
-    gas_estimate = tx_func.estimate_gas({'from': SENDER_ADDRESS})
-    gas_price = w3.eth.gas_price
+            tx_func = token_contract.functions.transfer(to_address, int(amount * (10 ** decimals)))
 
-    tx = tx_func.build_transaction({
-        'chainId': w3.eth.chain_id,
-        'gas': gas_estimate,
-        'gasPrice': gas_price,
-        'nonce': nonce
-    })
+            gas_estimate = tx_func.estimate_gas({'from': SENDER_ADDRESS})
+            gas_price = w3.eth.gas_price
 
-    signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-    return w3.to_hex(tx_hash)
+            tx = tx_func.build_transaction({
+                'chainId': w3.eth.chain_id,
+                'gas': gas_estimate,
+                'gasPrice': gas_price,
+                'nonce': nonce
+            })
+
+            signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            return w3.to_hex(tx_hash)
+
+        except Exception as e:
+            if "rate limit" in str(e).lower() or "429" in str(e):
+                logger.warning(f"⏳ RPC rate limit! Menunggu retry ke-{attempt + 1}...")
+                time.sleep(3 + attempt * 2)
+                continue
+            raise e
+
+    raise Exception("Gagal mengirim setelah beberapa percobaan.")
 
 # Kirim batch
 
@@ -252,4 +271,3 @@ def interactive_menu():
 
 if __name__ == "__main__":
     interactive_menu()
-
