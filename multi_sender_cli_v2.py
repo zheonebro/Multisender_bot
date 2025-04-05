@@ -21,6 +21,7 @@ PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_ADDRESS = Web3.to_checksum_address("0xbB5b70Ac7e8CE2cA9afa044638CBb545713eC34F")
+CSV_FILE = "wallets.csv"  # Tetap menggunakan nama file default
 
 # Connect Web3
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
@@ -113,16 +114,15 @@ def schedule_job(csv_file, min_amt, max_amt, schedule_time):
 
 def main():
     console.print("[bold cyan]=== BOT MULTISENDER ERC20 TERJADWAL ===[/bold cyan]")
-    csv_file = Prompt.ask("📂 Masukkan nama file CSV", default="wallets.csv")
     min_amt = float(Prompt.ask("🔢 Jumlah MIN token", default="5"))
     max_amt = float(Prompt.ask("🔢 Jumlah MAX token", default="20"))
 
     console.print(f"\n[blue]📦 Token dari: [white]{SENDER_ADDRESS}[/white][/blue]")
-    console.print(f"[blue]📁 CSV Target: [white]{csv_file}[/white][/blue]")
+    console.print(f"[blue]📁 CSV Target: [white]{CSV_FILE}[/white][/blue]")
     console.print(f"[blue]🎯 Rentang Token: [white]{min_amt} - {max_amt}[/white][/blue]\n")
 
     schedule_time = Prompt.ask("⏰ Masukkan waktu pengiriman harian berikutnya (format 24 jam HH:MM)", default="09:00")
-    schedule_job(csv_file, min_amt, max_amt, schedule_time)
+    schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
 
 if __name__ == "__main__":
     main()
