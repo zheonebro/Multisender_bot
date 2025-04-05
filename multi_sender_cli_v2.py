@@ -65,8 +65,7 @@ ERC20_ABI = [
         "constant": True,
         "inputs": [{"name": "_owner", "type": "address"}],
         "name": "balanceOf",
-        "outputs": [{"name": "balance", "type": "uint256"}],
-        "type": "function",
+        "outputs": [{"name": "balance", "type": "uint256"}]
     },
 ]
 
@@ -133,10 +132,11 @@ def send_token(to_address, amount):
     })
 
     try:
-        signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-        if not hasattr(signed_tx, "rawTransaction"):
+        signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+        raw_tx = getattr(signed_tx, 'rawTransaction', None)
+        if raw_tx is None:
             raise AttributeError("SignedTransaction object missing 'rawTransaction'")
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        tx_hash = w3.eth.send_raw_transaction(raw_tx)
         return w3.to_hex(tx_hash)
     except Exception as e:
         raise Exception(f"Gagal menandatangani atau mengirim transaksi: {e}")
@@ -170,6 +170,17 @@ def send_tokens(csv_file, min_amt, max_amt, count=None):
     console.print(panel)
     console.print(f"[green]✅ Sisa Token: {sisa_token:.4f} | Sisa TEA: {sisa_eth:.4f}[/green]")
 
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        os.makedirs("logs", exist_ok=True)
+        log_file = os.path.join("logs", f"{timestamp}_log.txt")
+        with open(log_file, "w", encoding="utf-8") as f:
+            for line in log_lines:
+                f.write(f"{line}\n")
+        console.print(f"[blue]📝 Log disimpan di: {log_file}[/blue]")
+    except Exception as e:
+        console.print(f"[red]❌ Gagal menyimpan log: {e}[/red]")
+
 def schedule_job(csv_file, min_amt, max_amt, schedule_time):
     def job():
         console.print("[bold magenta]\n🚀 Mengirim token ke 150 address acak...[/bold magenta]")
@@ -182,7 +193,7 @@ def schedule_job(csv_file, min_amt, max_amt, schedule_time):
         schedule.run_pending()
         time.sleep(5)
 
-def main():
+def run_bot():
     banner = Align.center("""
 ███╗   ███╗██╗   ██╗██╗██╗     ███████╗███████╗██████╗ 
 ████╗ ████║██║   ██║██║██║     ██╔════╝██╔════╝██╔══██╗
@@ -218,4 +229,4 @@ def main():
         schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
 
 if __name__ == "__main__":
-    main()
+    run_bot()
