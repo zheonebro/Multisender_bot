@@ -167,6 +167,30 @@ def log_balances():
     except Exception as e:
         logger.error(f"[red]Gagal membaca balance: {e}[/red]")
 
+# Fungsi tampilkan log online
+
+def show_log():
+    log_file = os.path.join("runtime_logs", "runtime.log")
+    if not os.path.exists(log_file):
+        console.print("[red]Log file tidak ditemukan.[/red]")
+        return
+
+    with open(log_file, "r", encoding="utf-8") as f:
+        lines = f.readlines()[-20:]  # tampilkan 20 log terakhir
+
+    table = Table(title="📜 Log Terbaru", show_header=True, header_style="bold cyan")
+    table.add_column("Waktu", style="dim")
+    table.add_column("Pesan")
+
+    for line in lines:
+        try:
+            timestamp, msg = line.strip().split(" ", 1)
+            table.add_row(timestamp, msg)
+        except:
+            continue
+
+    console.print(table)
+
 # Fungsi kirim token
 
 def send_token(to_address, amount):
@@ -258,7 +282,12 @@ threading.Thread(target=run_scheduler, daemon=True).start()
 
 def interactive_menu():
     console.print("[cyan]Bot aktif. Pengiriman otomatis dijadwalkan setiap jam.[/cyan]")
-    Prompt.ask("Tekan ENTER untuk keluar kapan saja")
+    while True:
+        action = Prompt.ask("\n[bold yellow]Perintah[/bold yellow] ([green]log[/green]/[red]exit[/red])", default="exit")
+        if action == "log":
+            show_log()
+        elif action == "exit":
+            break
 
 if __name__ == "__main__":
     interactive_menu()
