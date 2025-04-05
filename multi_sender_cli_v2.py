@@ -14,6 +14,7 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeEl
 from rich.logging import RichHandler
 from rich.layout import Layout
 from rich.live import Live
+from rich.table import Table
 import web3
 import schedule
 
