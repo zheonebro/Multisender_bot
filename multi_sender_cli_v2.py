@@ -27,9 +27,12 @@ RAW_SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 SENDER_ADDRESS = web3.Web3.to_checksum_address(RAW_SENDER_ADDRESS)
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_RAW = os.getenv("TOKEN_CONTRACT")
+EXPLORER_URL = "https://sepolia.tea.xyz/"
+
 if not TOKEN_CONTRACT_RAW:
     console.print("[bold red]❌ Environment variable 'TOKEN_CONTRACT' tidak ditemukan atau kosong![/bold red]")
     exit()
+
 TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(TOKEN_CONTRACT_RAW)
 CSV_FILE = "wallets_checksummed.csv"
 
@@ -49,6 +52,7 @@ ERC20_ABI = '''
 ]
 '''
 
+# Contract
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
 decimals = token_contract.functions.decimals().call()
 
@@ -58,17 +62,14 @@ def convert_addresses_to_checksum(input_file, output_file):
     try:
         with open(input_file, newline='') as infile, open(output_file, 'w', newline='') as outfile:
             reader = csv.DictReader(infile)
-            fieldnames = ['address']
-            writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+            writer = csv.DictWriter(outfile, fieldnames=['address'])
             writer.writeheader()
-
             for row in reader:
                 try:
                     checksummed = web3.Web3.to_checksum_address(row['address'].strip())
                     writer.writerow({'address': checksummed})
-                except Exception:
-                    console.print(f"[yellow]⚠️ Alamat dilewati karena tidak valid: {row['address']}[/yellow]")
-        console.print("[green]✅ File berhasil dikonversi ke checksum: wallets_checksummed.csv[/green]")
+                except:
+                    continue
     except Exception as e:
         console.print(f"[red]Gagal konversi checksum: {e}[/red]")
 
@@ -79,11 +80,10 @@ def load_wallets(csv_file):
             reader = csv.DictReader(f)
             for row in reader:
                 try:
-                    addr = web3.Web3.to_checksum_address(row['address'].strip())
-                    _ = token_contract.functions.balanceOf(addr).call()
-                    valid_addresses.append(addr)
+                    address = web3.Web3.to_checksum_address(row['address'].strip())
+                    valid_addresses.append(address)
                 except:
-                    console.print(f"[yellow]⚠️ Alamat tidak valid atau gagal verifikasi: {row['address']} - dilewati[/yellow]")
+                    continue
     except Exception as e:
         console.print(f"[red]Gagal membaca file: {e}[/red]")
     return valid_addresses
@@ -91,171 +91,108 @@ def load_wallets(csv_file):
 def get_token_balance(address):
     return token_contract.functions.balanceOf(address).call() / (10 ** decimals)
 
+def get_eth_balance(address):
+    return w3.eth.get_balance(address) / 10**18
+
 def send_token(to_address, amount):
     try:
         to_address = web3.Web3.to_checksum_address(to_address)
-    except Exception as e:
-        raise ValueError(f"Alamat tidak valid: {to_address}") from e
+    except:
+        raise ValueError("Alamat tidak valid")
 
     with nonce_lock:
         nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
 
     tx_func = token_contract.functions.transfer(to_address, int(amount * (10 ** decimals)))
-    gas_estimate = tx_func.estimate_gas({"from": SENDER_ADDRESS})
-    current_gas_price = w3.eth.gas_price
+    gas_estimate = tx_func.estimate_gas({'from': SENDER_ADDRESS})
+    gas_price = w3.eth.gas_price
 
     tx = tx_func.build_transaction({
         'chainId': w3.eth.chain_id,
         'gas': gas_estimate,
-        'gasPrice': current_gas_price,
+        'gasPrice': gas_price,
         'nonce': nonce
     })
+
     signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
     return w3.to_hex(tx_hash)
 
-def send_tokens(csv_file, min_amount, max_amount, limit=150):
+def send_tokens(csv_file, min_amt, max_amt, count=None):
     addresses = load_wallets(csv_file)
-    if not addresses:
-        return
+    if count:
+        addresses = random.sample(addresses, min(count, len(addresses)))
 
-    if limit is not None and len(addresses) > limit:
-        addresses = random.sample(addresses, limit)
+    log_lines = []
+    for i, address in enumerate(addresses, start=1):
+        try:
+            amount = round(random.uniform(min_amt, max_amt), 6)
+            tx_hash = send_token(address, amount)
+            tx_short = tx_hash[:10]
+            link = f"[link={EXPLORER_URL}{tx_hash}]{tx_short}...[/link]"
+            token_bal = get_token_balance(SENDER_ADDRESS)
+            eth_bal = get_eth_balance(SENDER_ADDRESS)
+            log = f"{i}. {address} ✅ {amount:.4f} | Token: {token_bal:.4f} | TEA: {eth_bal:.4f} | TX: {link}"
+            console.print(log)
+            log_lines.append(log)
+            time.sleep(random.uniform(0.5, 1.2))
+        except Exception as e:
+            log = f"{i}. {address} ❌ ERROR: {str(e)}"
+            console.print(f"[red]{log}[/red]")
+            log_lines.append(log)
 
-    estimated_total = len(addresses) * ((min_amount + max_amount) / 2)
-    balance = get_token_balance(SENDER_ADDRESS)
-    if balance < estimated_total:
-        console.print(f"[red]❌ Saldo tidak cukup: hanya {balance:.2f} token tersedia[/red]")
-        return
-
-    table = Table(title="📤 Status Pengiriman", show_lines=True)
-    table.add_column("No", justify="center", style="bold")
-    table.add_column("Address", justify="left", style="cyan")
-    table.add_column("Jumlah", justify="right", style="magenta")
-    table.add_column("Status", justify="center")
-
-    with Progress(
-        SpinnerColumn(),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TimeElapsedColumn(),
-        console=console
-    ) as progress:
-        task = progress.add_task("Mengirim token...", total=len(addresses))
-
-        for i, address in enumerate(addresses, start=1):
-            for attempt in range(3):
-                try:
-                    amount = round(random.uniform(min_amount, max_amount), 6)
-
-                    balance = get_token_balance(SENDER_ADDRESS)
-                    if balance < amount:
-                        raise Exception("Saldo tidak mencukupi untuk transaksi ini")
-
-                    tx_hash = send_token(address, amount)
-                    tx_link = f"https://etherscan.io/tx/{tx_hash}"
-                    log_message = f"[green][{datetime.now()}] ✅ {amount} token ke {address} | [link={tx_link}]{tx_hash}[/link][/green]"
-                    console.print(log_message)
-                    table.add_row(str(i), address, str(amount), f"✅ [link={tx_link}]{tx_hash[:10]}...")
-                    with open("logs.txt", "a", buffering=1) as log_file:
-                        log_file.write(f"{datetime.now()} | {address} | {amount} | {tx_hash}\n")
-                    break
-                except Exception as e:
-                    if attempt == 2:
-                        log_message = f"[red][{datetime.now()}] ❌ Gagal kirim ke {address}: {e}[/red]"
-                        console.print(log_message)
-                        table.add_row(str(i), address, "-", f"❌ {e}")
-                        with open("logs.txt", "a", buffering=1) as log_file:
-                            log_file.write(traceback.format_exc())
-                    else:
-                        time.sleep(2)
-            progress.update(task, advance=1)
-            time.sleep(random.uniform(0.5, 1.5))
-
-    console.print(Panel(table, title="📬 Ringkasan Pengiriman", border_style="bright_blue"))
-
-def test_send(csv_file, min_amt, max_amt):
-    console.print("[yellow]🔍 Melakukan pengujian pengiriman token ke 10 address...[/yellow]")
-    send_tokens(csv_file, min_amt, max_amt, limit=10)
+    panel = Panel("\n".join(log_lines), title="📬 Ringkasan Pengiriman", border_style="bright_blue")
+    sisa_token = get_token_balance(SENDER_ADDRESS)
+    sisa_eth = get_eth_balance(SENDER_ADDRESS)
+    console.print(panel)
+    console.print(f"[green]✅ Sisa Token: {sisa_token:.4f} | Sisa TEA: {sisa_eth:.4f}[/green]")
 
 def schedule_job(csv_file, min_amt, max_amt, schedule_time):
     def job():
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        console.print(f"\n[cyan]⏰ [{now}] Menjalankan pengiriman token terjadwal...[/cyan]")
-        send_tokens(csv_file, min_amt, max_amt, limit=150)
+        console.print("[bold magenta]\n🚀 Mengirim token ke 150 address acak...[/bold magenta]")
+        send_tokens(csv_file, min_amt, max_amt, count=150)
 
-    console.print("[bold yellow]🔍 Menjalankan tes pengiriman sebelum dijadwalkan...[/bold yellow]")
-    test_send(csv_file, min_amt, max_amt)
-
-    console.print("[bold magenta]\n🚀 Pengiriman awal dimulai sekarang...[/bold magenta]")
-    send_tokens(csv_file, min_amt, max_amt, limit=150)
-
+    console.print("[yellow]⏳ Menunggu waktu terjadwal...[/yellow]")
     schedule.every().day.at(schedule_time).do(job)
-    console.print(f"[bold green]✅ Bot dijadwalkan setiap hari jam {schedule_time}[/bold green]")
 
     while True:
         schedule.run_pending()
-        time.sleep(10)
+        time.sleep(5)
 
 def main():
     banner = Align.center("""
-███▃   ███▃██▄   ██▄██▄██▄     ██████▃█████▃████▀ 
-████▄ ████▄██▄   ██▄██▄     ██▌██▌█8█▌██▄██▌
-██▄██▄██▄██▄   ██▄██▄     ████▃  ████▃  ██▄  ██▄
-██▄▌██▄██▄   ██▄██▄     ██▌▌██▄██▌▌██▄  ██▄
-██▄ ▌▀██▄▄████▀▄██▄█████▃█████▃████▀ 
-▌▀▌     ▌▀▌ ▌▀▀▀▀▀▀▌ ▌▀▀▀▀▀▀▌▌▀▀▀▀▀ 
+███╗   ███╗██╗   ██╗██╗██╗     ███████╗███████╗██████╗ 
+████╗ ████║██║   ██║██║██║     ██╔════╝██╔════╝██╔══██╗
+██╔████╔██║██║   ██║██║██║     █████╗  █████╗  ██║  ██║
+██║╚██╔╝██║██║   ██║██║██║     ██╔══╝  ██╔══╝  ██║  ██║
+██║ ╚═╝ ██║╚██████╔╝██║███████╗███████╗███████╗██████╔╝
+╚═╝     ╚═╝ ╚═════╝ ╚═╝╚══════╝╚══════╝╚══════╝╚═════╝ 
 """, vertical="middle")
     console.print(banner, style="bold blue")
 
-    console.print("[bold cyan]=== BOT MULTISENDER ERC20 ===[/bold cyan]", justify="center")
     convert_addresses_to_checksum("wallets.csv", CSV_FILE)
 
-    while True:
-        min_amt = float(Prompt.ask("🔢 Jumlah MIN token", default="5"))
-        max_amt = float(Prompt.ask("🔢 Jumlah MAX token", default="20"))
-        if min_amt <= 0 or max_amt <= 0:
-            console.print("[red]❌ Jumlah token harus lebih dari 0[/red]")
-        elif min_amt > max_amt:
-            console.print("[red]❌ MIN tidak boleh lebih besar dari MAX[/red]")
-        else:
-            break
+    min_amt = float(Prompt.ask("🔢 Jumlah MIN token", default="5"))
+    max_amt = float(Prompt.ask("🔢 Jumlah MAX token", default="20"))
 
-    estimated_total = len(load_wallets(CSV_FILE)) * ((min_amt + max_amt) / 2)
-    console.print(f"[yellow]📊 Estimasi total token yang akan dikirim: ~{estimated_total:.2f}[/yellow]")
-
-    console.print(f"\n[blue]📦 Token dari: [white]{SENDER_ADDRESS}[/white][/blue]")
-    console.print(f"[blue]📁 CSV Target: [white]{CSV_FILE}[/white][/blue]")
-    console.print(f"[blue]🎯 Rentang Token: [white]{min_amt} - {max_amt}[/white][/blue]\n")
-
-    console.print("[bold green]Pilih mode pengiriman:[/bold green]")
+    console.print("\n[bold green]Pilih mode pengiriman:[/bold green]")
     console.print("[cyan][1][/cyan] Kirim Sekali (langsung)")
     console.print("[cyan][2][/cyan] Kirim Sekarang + Terjadwal")
-    console.print("[cyan][3][/cyan] Hanya Terjadwal")
+    console.print("[cyan][3][/cyan] Hanya Terjadwal (uji 10 address dulu)")
 
     mode = Prompt.ask("📌 Pilihan Anda", choices=["1", "2", "3"], default="1")
 
     if mode == "1":
-        console.print("[bold magenta]\n🚀 Pengiriman dimulai...[/bold magenta]")
-        send_tokens(CSV_FILE, min_amt, max_amt, limit=150)
+        send_tokens(CSV_FILE, min_amt, max_amt)
     elif mode == "2":
-        schedule_time = Prompt.ask("⏰ Waktu pengiriman harian berikutnya (HH:MM)", default="09:00")
+        schedule_time = Prompt.ask("⏰ Jadwal harian berikutnya (HH:MM)", default="09:00")
+        send_tokens(CSV_FILE, min_amt, max_amt)
         schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
     elif mode == "3":
-        schedule_time = Prompt.ask("⏰ Waktu pengiriman harian (HH:MM)", default="09:00")
-        console.print(f"[yellow]⏳ Menunggu waktu terjadwal: {schedule_time}[/yellow]")
-
-        def job():
-            console.print("[bold yellow]🔍 Tes pengiriman sebelum kirim utama...[/bold yellow]")
-            test_send(CSV_FILE, min_amt, max_amt)
-            console.print("[bold magenta]\n🚀 Pengiriman terjadwal dimulai...[/bold magenta]")
-            send_tokens(CSV_FILE, min_amt, max_amt, limit=150)
-
-        schedule.every().day.at(schedule_time).do(job)
-
-        while True:
-            schedule.run_pending()
-            time.sleep(10)
+        console.print("[bold yellow]🔍 Pengujian: Kirim ke 10 address acak...[/bold yellow]")
+        send_tokens(CSV_FILE, min_amt, max_amt, count=10)
+        schedule_time = Prompt.ask("⏰ Jadwal pengiriman (HH:MM)", default="09:00")
+        schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
 
 if __name__ == "__main__":
     main()
