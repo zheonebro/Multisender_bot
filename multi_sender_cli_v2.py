@@ -29,6 +29,15 @@ RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_RAW = os.getenv("TOKEN_CONTRACT")
 EXPLORER_URL = "https://sepolia.tea.xyz/"
 
+DAILY_LIMIT_RAW = os.getenv("DAILY_LIMIT", "0")
+try:
+    DAILY_LIMIT = float(DAILY_LIMIT_RAW)
+except ValueError:
+    DAILY_LIMIT = 0
+
+daily_sent_total = 0.0
+daily_lock = threading.Lock()
+
 if not TOKEN_CONTRACT_RAW:
     console.print("[bold red]❌ Environment variable 'TOKEN_CONTRACT' tidak ditemukan atau kosong![/bold red]")
     exit()
@@ -142,16 +151,17 @@ def send_token(to_address, amount):
 
     try:
         signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-        raw_tx = getattr(signed_tx, 'rawTransaction', None)
-        if raw_tx is None:
+        if not hasattr(signed_tx, 'rawTransaction'):
             raise ValueError("SignedTransaction object missing 'rawTransaction'")
-        tx_hash = w3.eth.send_raw_transaction(raw_tx)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
         return w3.to_hex(tx_hash)
     except Exception as e:
         raise Exception(f"Gagal menandatangani atau mengirim transaksi: {e}")
 
 
 def send_tokens(csv_file, min_amt, max_amt, count=None):
+    global daily_sent_total
+
     addresses = load_wallets(csv_file)
     if count:
         addresses = random.sample(addresses, min(count, len(addresses)))
@@ -160,6 +170,13 @@ def send_tokens(csv_file, min_amt, max_amt, count=None):
     for i, address in enumerate(addresses, start=1):
         try:
             amount = round(random.uniform(min_amt, max_amt), 6)
+
+            with daily_lock:
+                if DAILY_LIMIT > 0 and daily_sent_total + amount > DAILY_LIMIT:
+                    console.print(f"[bold red]🚫 Batas harian tercapai: {daily_sent_total:.4f} / {DAILY_LIMIT}[/bold red]")
+                    break
+                daily_sent_total += amount
+
             tx_hash = send_token(address, amount)
             tx_short = tx_hash[:10]
             link = f"[link={EXPLORER_URL}{tx_hash}]{tx_short}...[/link]"
@@ -178,7 +195,7 @@ def send_tokens(csv_file, min_amt, max_amt, count=None):
     sisa_token = get_token_balance(SENDER_ADDRESS)
     sisa_eth = get_eth_balance(SENDER_ADDRESS)
     console.print(panel)
-    console.print(f"[green]✅ Sisa Token: {sisa_token:.4f} | Sisa TEA: {sisa_eth:.4f}[/green]")
+    console.print(f"[green]✅ Sisa Token: {sisa_token:.4f} | Sisa TEA: {sisa_eth:.4f} | Terkirim hari ini: {daily_sent_total:.4f}[/green]")
 
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -191,6 +208,9 @@ def send_tokens(csv_file, min_amt, max_amt, count=None):
     except Exception as e:
         console.print(f"[red]❌ Gagal menyimpan log: {e}[/red]")
 
+
+# Jadwal dan lainnya tetap
+# (tidak diubah)
 
 def schedule_job(csv_file, min_amt, max_amt, schedule_time):
     def job():
