@@ -67,10 +67,16 @@ INFURA_URL=https://mainnet.infura.io/v3/YOUR-PROJECT-ID
 
 TOKEN_CONTRACT=0xTokenContractAddress
 
+
+
 #untuk infura URL tea sepolia tesnet gunakan RPC dibawah ini#
+
 ```https://tea-sepolia.g.alchemy.com/v2/yN8jExL8zpeSAT-d20KX1obM239S83Lc```
 
 Note : ⚠️ Jangan pernah upload file .env ke publik!
+
+
+
 
 3. Siapkan File Wallets
 Buat file wallets.csv berisi address tujuan. 
