@@ -4,6 +4,7 @@ import random
 import time
 from datetime import datetime
 import traceback
+import threading
 
 from dotenv import load_dotenv
 from rich import print
@@ -25,7 +26,7 @@ PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 RAW_SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 SENDER_ADDRESS = web3.Web3.to_checksum_address(RAW_SENDER_ADDRESS)
 RPC_URL = os.getenv("INFURA_URL")
-TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address("0xbB5b70Ac7e8CE2cA9afa044638CBb545713eC34F")
+TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(os.getenv("TOKEN_CONTRACT"))
 CSV_FILE = "wallets_checksummed.csv"
 
 # Connect Web3
@@ -46,6 +47,8 @@ ERC20_ABI = '''
 
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
 decimals = token_contract.functions.decimals().call()
+
+nonce_lock = threading.Lock()
 
 
 def convert_addresses_to_checksum(input_file, output_file):
@@ -89,21 +92,26 @@ def send_token(to_address, amount):
     except Exception as e:
         raise ValueError(f"Alamat tidak valid: {to_address}") from e
 
-    nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
-    tx = token_contract.functions.transfer(
-        to_address,
-        int(amount * (10 ** decimals))
-    ).build_transaction({
+    with nonce_lock:
+        nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
+
+    tx_func = token_contract.functions.transfer(to_address, int(amount * (10 ** decimals)))
+    gas_estimate = tx_func.estimate_gas({"from": SENDER_ADDRESS})
+
+    tx = tx_func.build_transaction({
         'chainId': w3.eth.chain_id,
-        'gas': 100000,
+        'gas': gas_estimate,
         'gasPrice': w3.to_wei(2.4, 'gwei'),
         'nonce': nonce
     })
     signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+    tx_hash = w3.eth.send_raw_transaction(
+        signed_tx.raw_transaction if hasattr(signed_tx, 'raw_transaction') else signed_tx.rawTransaction
+    )
     return w3.to_hex(tx_hash)
 
 
+# Fungsi kirim token ke semua alamat dalam CSV
 def send_tokens(csv_file, min_amount, max_amount):
     addresses = load_wallets(csv_file)
     if not addresses:
@@ -143,8 +151,8 @@ def send_tokens(csv_file, min_amount, max_amount):
                     tx_link = f"https://etherscan.io/tx/{tx_hash}"
                     log_message = f"[green][{datetime.now()}] ✅ {amount} token ke {address} | [link={tx_link}]{tx_hash}[/link][/green]"
                     console.print(log_message)
-                    table.add_row(str(i), address, str(amount), f"✅ [link={tx_link}]{tx_hash[:10]}...[/link]")
-                    with open("logs.txt", "a") as log_file:
+                    table.add_row(str(i), address, str(amount), f"✅ [link={tx_link}]{tx_hash[:10]}...")
+                    with open("logs.txt", "a", buffering=1) as log_file:
                         log_file.write(f"{datetime.now()} | {address} | {amount} | {tx_hash}\n")
                     break
                 except Exception as e:
@@ -152,15 +160,17 @@ def send_tokens(csv_file, min_amount, max_amount):
                         log_message = f"[red][{datetime.now()}] ❌ Gagal kirim ke {address}: {e}[/red]"
                         console.print(log_message)
                         table.add_row(str(i), address, "-", f"❌ {e}")
-                        with open("logs.txt", "a") as log_file:
+                        with open("logs.txt", "a", buffering=1) as log_file:
                             log_file.write(traceback.format_exc())
                     else:
                         time.sleep(2)
             progress.update(task, advance=1)
+            time.sleep(random.uniform(0.5, 1.5))
 
     console.print(Panel(table, title="📬 Ringkasan Pengiriman", border_style="bright_blue"))
 
 
+# Penjadwalan pengiriman token
 def schedule_job(csv_file, min_amt, max_amt, schedule_time):
     def job():
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -177,6 +187,8 @@ def schedule_job(csv_file, min_amt, max_amt, schedule_time):
         schedule.run_pending()
         time.sleep(10)
 
+
+# Fungsi utama
 
 def main():
     banner = Align.center("""
