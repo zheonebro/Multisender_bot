@@ -9,13 +9,13 @@ import logging
 
 from dotenv import load_dotenv
 from rich.console import Console
-from rich.prompt import Prompt
+from rich.panel import Panel  # Import Panel
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from rich.logging import RichHandler
 from rich.layout import Layout
 from rich.live import Live
 from rich.text import Text
-from rich import box
+from rich import box  # Import box
 import web3
 import schedule
 from web3.exceptions import TransactionNotFound
@@ -207,8 +207,7 @@ def send_tokens():
             signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
             tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
 
-            logger.info(f"[green]✅ Sent {amount / (10 ** decimals):.4f} {TOKEN_NAME} to {to_address} | Hash: {tx_hash.hex()}[/green]")
-
+            logger.info(f"[green]✅ Sent {amount / (10 ** decimals):.4f} {TOKEN_NAME} to {to_address} | Tx Hash: {tx_hash.hex()}[/green]")
             time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))  # Delay acak
 
         except Exception as e:
