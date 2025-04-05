@@ -30,7 +30,7 @@ Contoh :
 # 3. Install library yang dibutuhkan
 ```pip3 install -r requirements.txt```
 
-============================================================================================================================
+====================================================================================
 Agar program PIP3 tidak bentrok dengan yang lain lakukan perintah berikut :
 # I. Pastikan pip & venv tersedia
 ```sudo apt install python3-pip python3-venv -y```
@@ -46,7 +46,7 @@ Setelah ini, prompt kamu akan berubah jadi seperti ini:
 (venv) user@vps:~/multisender-bot$
 
 
-=============================================================================================================================
+=====================================================================================
 
 
 2. Konfigurasi .env
