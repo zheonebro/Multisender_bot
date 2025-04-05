@@ -5,14 +5,14 @@ import time
 from datetime import datetime
 import threading
 import logging
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from rich.console import Console
-from rich.prompt import Prompt
 from rich.panel import Panel
-from rich.progress import Progress
 from rich import box
 import web3
+import tenacity
+import schedule
 
 # Init
 console = Console()
@@ -73,7 +73,7 @@ if not TOKEN_CONTRACT_RAW:
 
 TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(TOKEN_CONTRACT_RAW)
 
-CSV_FILE = "wallets.csv"  # default file, tidak ada prompt lagi
+CSV_FILE = "wallets.csv"
 
 # Connect Web3
 w3 = web3.Web3(web3.Web3.HTTPProvider(RPC_URL))
@@ -122,11 +122,9 @@ decimals = token_contract.functions.decimals().call()
 TOKEN_NAME = token_contract.functions.name().call()
 
 nonce_lock = threading.Lock()
-daily_sent_total = 0.0
-daily_lock = threading.Lock()
+wallets_all = []
 
-# Fungsi load wallet
-
+# Load wallet
 def load_wallets(csv_file):
     valid_addresses = []
     with open(csv_file, newline='') as f:
@@ -141,8 +139,7 @@ def load_wallets(csv_file):
 
 wallets_all = load_wallets(CSV_FILE)
 
-# Fungsi monitoring balance dan TEA (ETH) untuk gas
-
+# Monitoring balance
 def log_balances():
     try:
         token_balance_raw = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
@@ -155,73 +152,113 @@ def log_balances():
         estimated_gas_per_tx = 50000
         estimated_tx_possible = int(eth_balance_wei / (estimated_gas_per_tx * gas_price))
 
-        logger.info(f"📊 [bold]Token balance:[/bold] {token_balance:.4f} {TOKEN_NAME}")
-        logger.info(f"⛽ [bold]TEA balance (untuk gas):[/bold] {eth_balance:.6f} TEA")
-        logger.info(f"🔗 [bold]Estimasi TX sisa:[/bold] {estimated_tx_possible} transaksi")
+        logger.info(f"📊 Token balance: {token_balance:.4f} {TOKEN_NAME}")
+        logger.info(f"⛽ TEA balance (gas): {eth_balance:.6f} TEA")
+        logger.info(f"🔗 Estimasi TX sisa: {estimated_tx_possible} transaksi")
     except Exception as e:
-        logger.error(f"[red]Gagal membaca balance: {e}[/red]")
+        logger.error(f"Gagal membaca balance: {e}")
 
-# Fungsi kirim token dengan log lebih menarik dan detail
+# Retry decorator
+@tenacity.retry(
+    wait=tenacity.wait_exponential(multiplier=1, min=5, max=60),
+    stop=tenacity.stop_after_attempt(5),
+    retry=tenacity.retry_if_exception_type(Exception)
+)
+def safe_send_transaction(tx):
+    signed = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+    return w3.eth.send_raw_transaction(signed.raw_transaction)
 
-def send_tokens():
+# Multi-thread
+THREAD_WORKERS = 5
+BATCH_SIZE = 10
+IDLE_AFTER_BATCH_SECONDS = 300
+
+MIN_TOKEN = 5
+MAX_TOKEN = 50
+
+def process_batch(addresses_batch, batch_id):
+    for i, to_address in enumerate(addresses_batch):
+        try:
+            token_amount = random.randint(MIN_TOKEN, MAX_TOKEN)
+            amount = token_amount * (10 ** decimals)
+            with nonce_lock:
+                nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
+                tx = token_contract.functions.transfer(to_address, amount).build_transaction({
+                    'from': SENDER_ADDRESS,
+                    'nonce': nonce,
+                    'gas': 60000,
+                    'gasPrice': w3.eth.gas_price
+                })
+                tx_hash = safe_send_transaction(tx)
+
+            logger.info(f"[BATCH {batch_id}] ✅ Sent {token_amount} {TOKEN_NAME} to {to_address}")
+            logger.info(f"[TX] https://sepolia.etherscan.io/tx/{tx_hash.hex()}")
+        except Exception as e:
+            logger.error(f"[BATCH {batch_id}] ❌ Failed to send to {to_address}: {e}")
+
+        time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
+
+def send_tokens_multithreaded():
     if not wallets_all:
         logger.warning("❗ Daftar wallet kosong.")
         return
 
-    total_addresses = len(wallets_all)
-    logger.info(f"🚀 **Token Transfer Started** 🚀")
-    logger.info(f"--------------------------------")
-    
-    # Ambil saldo token sebelum pengiriman
-    token_balance_raw = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
-    token_balance = token_balance_raw / (10 ** decimals)
-    eth_balance_wei = w3.eth.get_balance(SENDER_ADDRESS)
-    eth_balance = w3.from_wei(eth_balance_wei, 'ether')
-
-    gas_price = w3.eth.gas_price
-    estimated_gas_per_tx = 50000
-    estimated_tx_possible = int(eth_balance_wei / (estimated_gas_per_tx * gas_price))
-
-    logger.info(f"🕒 {datetime.now().strftime('%H:%M:%S')} → **Total Alamat**: {total_addresses}")
-    logger.info(f"📊 **Token Balance**: {token_balance:.4f} {TOKEN_NAME}")
-    logger.info(f"⛽ **TEA Balance**: {eth_balance:.6f} TEA (Enough for {estimated_tx_possible} transactions)")
-    logger.info(f"--------------------------------")
+    logger.info("🚀 Memulai pengiriman multi-threaded...")
 
     random.shuffle(wallets_all)
-    for i, to_address in enumerate(wallets_all):
-        try:
-            # Menghitung jumlah token yang akan dikirim secara acak
-            amount = random.randint(10, 100) * (10 ** decimals)
-            nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
-            tx = token_contract.functions.transfer(to_address, amount).build_transaction({
-                'from': SENDER_ADDRESS,
-                'nonce': nonce,
-                'gas': 60000,
-                'gasPrice': w3.eth.gas_price
-            })
-            signed = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-            logger.info(f"🔄 **Sending Tokens to Address {i+1}:**")
-            logger.info(f"💰 Amount: {amount / (10 ** decimals)} {TOKEN_NAME}")
-            logger.info(f"🔗 Transaction Hash: `{tx_hash.hex()}`")
-            logger.info(f"🧑‍💻 **Address**: `{to_address}`")
-            logger.info(f"--------------------------------")
-        except Exception as e:
-            if "too many requests" in str(e).lower():
-                logger.warning(f"⚠️ **RPC Limit Hit**:")
-                logger.warning(f"🕒 {datetime.now().strftime('%H:%M:%S')} → **Waiting 60 seconds** before resuming...")
-                time.sleep(60)
+    batches = [wallets_all[i:i + BATCH_SIZE] for i in range(0, len(wallets_all), BATCH_SIZE)]
+
+    with ThreadPoolExecutor(max_workers=THREAD_WORKERS) as executor:
+        futures = {executor.submit(process_batch, batch, idx+1): idx+1 for idx, batch in enumerate(batches)}
+
+        for future in as_completed(futures):
+            batch_id = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                logger.error(f"❌ BATCH {batch_id} failed with error: {e}")
+
+    logger.info("🎉 Semua batch selesai dikirim.")
+    logger.info(f"💤 Idle selama {IDLE_AFTER_BATCH_SECONDS} detik...")
+    time.sleep(IDLE_AFTER_BATCH_SECONDS)
+
+# CLI Menu
+
+def cli_menu():
+    global MIN_TOKEN, MAX_TOKEN
+    while True:
+        console.print("\n[bold cyan]Menu:[/bold cyan]\n1. Kirim Token Sekarang\n2. Jadwalkan Kirim Harian\n3. Keluar", style="bold")
+        choice = input("Pilih opsi (1/2/3): ").strip()
+
+        if choice == "1" or choice == "2":
+            try:
+                min_input = input("Masukkan minimum token per transaksi (default 5): ").strip()
+                MIN_TOKEN = int(min_input) if min_input else 5
+                max_input = input("Masukkan maksimum token per transaksi (default 50): ").strip()
+                MAX_TOKEN = int(max_input) if max_input else 50
+            except ValueError:
+                MIN_TOKEN, MAX_TOKEN = 5, 50
+                logger.warning("Input tidak valid. Menggunakan default 5-50 token.")
+
+            if MIN_TOKEN > MAX_TOKEN:
+                MIN_TOKEN, MAX_TOKEN = MAX_TOKEN, MIN_TOKEN
+                logger.warning("Minimum lebih besar dari maksimum. Nilai ditukar.")
+
+            if choice == "1":
+                log_balances()
+                send_tokens_multithreaded()
             else:
-                logger.error(f"❌ **Failed to send to {to_address}: {e}**")
+                schedule.every().day.at("10:00").do(lambda: [log_balances(), send_tokens_multithreaded()])
+                console.print("⏰ Pengiriman dijadwalkan setiap hari pukul 10:00.")
+                while True:
+                    schedule.run_pending()
+                    time.sleep(60)
 
-    logger.info(f"🎉 **Batch Completed!**")
-    logger.info(f"🕒 {datetime.now().strftime('%H:%M:%S')} → **Total Sent Tokens**: {token_balance - token_balance_raw / (10 ** decimals)}")
-    logger.info(f"--------------------------------")
-
-# Main function
-def main():
-    log_balances()
-    send_tokens()
+        elif choice == "3":
+            logger.info("👋 Keluar dari program.")
+            break
+        else:
+            console.print("❌ Pilihan tidak valid. Coba lagi.", style="red")
 
 if __name__ == "__main__":
-    main()
+    cli_menu()
