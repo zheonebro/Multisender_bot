@@ -44,6 +44,24 @@ ERC20_ABI = '''
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
 decimals = token_contract.functions.decimals().call()
 
+def convert_addresses_to_checksum(input_file, output_file):
+    try:
+        with open(input_file, newline='') as infile, open(output_file, 'w', newline='') as outfile:
+            reader = csv.DictReader(infile)
+            fieldnames = ['address']
+            writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for row in reader:
+                try:
+                    checksummed = Web3.to_checksum_address(row['address'].strip())
+                    writer.writerow({'address': checksummed})
+                except Exception:
+                    console.print(f"[yellow]⚠️ Alamat dilewati karena tidak valid: {row['address']}[/yellow]")
+        console.print("[green]✅ File berhasil dikonversi ke checksum: wallets_checksummed.csv[/green]")
+    except Exception as e:
+        console.print(f"[red]Gagal konversi checksum: {e}[/red]")
+
 def load_wallets(csv_file):
     valid_addresses = []
     try:
@@ -54,7 +72,7 @@ def load_wallets(csv_file):
                 try:
                     checksummed = Web3.to_checksum_address(address)
                     valid_addresses.append(checksummed)
-                except Exception as e:
+                except Exception:
                     console.print(f"[yellow]⚠️ Alamat tidak valid dilewati: {address}[/yellow]")
     except Exception as e:
         console.print(f"[red]Gagal membaca file: {e}[/red]")
@@ -148,6 +166,8 @@ def main():
     console.print(banner, style="bold blue")
 
     console.print("[bold cyan]=== BOT MULTISENDER ERC20 TERJADWAL ===[/bold cyan]", justify="center")
+    convert_addresses_to_checksum(CSV_FILE, "wallets_checksummed.csv")
+
     min_amt = float(Prompt.ask("🔢 Jumlah MIN token", default="5"))
     max_amt = float(Prompt.ask("🔢 Jumlah MAX token", default="20"))
 
@@ -156,7 +176,7 @@ def main():
     console.print(f"[blue]🎯 Rentang Token: [white]{min_amt} - {max_amt}[/white][/blue]\n")
 
     schedule_time = Prompt.ask("⏰ Masukkan waktu pengiriman harian berikutnya (format 24 jam HH:MM)", default="09:00")
-    schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
+    schedule_job("wallets_checksummed.csv", min_amt, max_amt, schedule_time)
 
 if __name__ == "__main__":
     main()
