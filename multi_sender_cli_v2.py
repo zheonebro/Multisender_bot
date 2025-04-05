@@ -219,7 +219,7 @@ def process_batch(addresses_batch, batch_id):
                 tx_hash = safe_send_transaction(tx)
 
             logger.info(f"[BATCH {batch_id}] ✅ Sent {token_amount} {TOKEN_NAME} to {to_address}")
-            logger.info(f"[TX] https://sepolia.etherscan.io/tx/{tx_hash.hex()}")
+            logger.info(f"[TX] https://sepolia.tea.xyz/tx/{tx_hash.hex()}")
             save_sent_wallet(to_address)
         except Exception as e:
             logger.error(f"[BATCH {batch_id}] ❌ Failed to send to {to_address}: {e}")
