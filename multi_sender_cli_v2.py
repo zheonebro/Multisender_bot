@@ -26,7 +26,11 @@ PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 RAW_SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 SENDER_ADDRESS = web3.Web3.to_checksum_address(RAW_SENDER_ADDRESS)
 RPC_URL = os.getenv("INFURA_URL")
-TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(os.getenv("TOKEN_CONTRACT"))
+TOKEN_CONTRACT_RAW = os.getenv("TOKEN_CONTRACT")
+if not TOKEN_CONTRACT_RAW:
+    console.print("[bold red]❌ Environment variable 'TOKEN_CONTRACT' tidak ditemukan atau kosong![/bold red]")
+    exit()
+TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(TOKEN_CONTRACT_RAW)
 CSV_FILE = "wallets_checksummed.csv"
 
 # Connect Web3
