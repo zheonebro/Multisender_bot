@@ -48,7 +48,7 @@ ERC20_ABI = '''
     {"constant":false,"inputs":[{"name":"_to","type":"address"},{"name":"_value","type":"uint256"}],
      "name":"transfer","outputs":[{"name":"","type":"bool"}],"type":"function"},
     {"constant":true,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"type":"function"},
-    {"constant":true,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}],"type":"function"}
+    {"constant":true,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}]}
 ]
 '''
 
@@ -114,9 +114,14 @@ def send_token(to_address, amount):
         'nonce': nonce
     })
 
-    signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-    return w3.to_hex(tx_hash)
+    try:
+        signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+        if not hasattr(signed_tx, "rawTransaction"):
+            raise AttributeError("SignedTransaction object missing 'rawTransaction'")
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        return w3.to_hex(tx_hash)
+    except Exception as e:
+        raise Exception(f"Gagal menandatangani atau mengirim transaksi: {e}")
 
 def send_tokens(csv_file, min_amt, max_amt, count=None):
     addresses = load_wallets(csv_file)
@@ -132,13 +137,13 @@ def send_tokens(csv_file, min_amt, max_amt, count=None):
             link = f"[link={EXPLORER_URL}{tx_hash}]{tx_short}...[/link]"
             token_bal = get_token_balance(SENDER_ADDRESS)
             eth_bal = get_eth_balance(SENDER_ADDRESS)
-            log = f"{i}. {address} ✅ {amount:.4f} | Token: {token_bal:.4f} | TEA: {eth_bal:.4f} | TX: {link}"
+            log = f"{i}. [green]{address}[/green] ✅ {amount:.4f} | Token: [bold]{token_bal:.4f}[/bold] | TEA: [bold]{eth_bal:.4f}[/bold] | TX: {link}"
             console.print(log)
             log_lines.append(log)
             time.sleep(random.uniform(0.5, 1.2))
         except Exception as e:
-            log = f"{i}. {address} ❌ ERROR: {str(e)}"
-            console.print(f"[red]{log}[/red]")
+            log = f"{i}. [red]{address}[/red] ❌ ERROR: {str(e)}"
+            console.print(log)
             log_lines.append(log)
 
     panel = Panel("\n".join(log_lines), title="📬 Ringkasan Pengiriman", border_style="bright_blue")
