@@ -12,7 +12,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from rich.align import Align
-from web3 import Web3
+import web3
 import schedule
 
 # Init
@@ -23,11 +23,11 @@ load_dotenv()
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 RPC_URL = os.getenv("INFURA_URL")
-TOKEN_CONTRACT_ADDRESS = Web3.to_checksum_address("0xbB5b70Ac7e8CE2cA9afa044638CBb545713eC34F")
+TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address("0xbB5b70Ac7e8CE2cA9afa044638CBb545713eC34F")
 CSV_FILE = "wallets_checksummed.csv"
 
 # Connect Web3
-w3 = Web3(Web3.HTTPProvider(RPC_URL))
+w3 = web3.Web3(web3.Web3.HTTPProvider(RPC_URL))
 if not w3.is_connected():
     console.print("[bold red]❌ Gagal terhubung ke jaringan! Cek RPC URL[/bold red]")
     exit()
@@ -37,7 +37,8 @@ ERC20_ABI = '''
 [
     {"constant":false,"inputs":[{"name":"_to","type":"address"},{"name":"_value","type":"uint256"}],
      "name":"transfer","outputs":[{"name":"","type":"bool"}],"type":"function"},
-    {"constant":true,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"type":"function"}
+    {"constant":true,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"type":"function"},
+    {"constant":true,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}],"type":"function"}
 ]
 '''
 
@@ -54,7 +55,7 @@ def convert_addresses_to_checksum(input_file, output_file):
 
             for row in reader:
                 try:
-                    checksummed = Web3.to_checksum_address(row['address'].strip())
+                    checksummed = web3.Web3.to_checksum_address(row['address'].strip())
                     writer.writerow({'address': checksummed})
                 except Exception:
                     console.print(f"[yellow]⚠️ Alamat dilewati karena tidak valid: {row['address']}[/yellow]")
@@ -73,9 +74,12 @@ def load_wallets(csv_file):
         console.print(f"[red]Gagal membaca file: {e}[/red]")
     return valid_addresses
 
+def get_token_balance(address):
+    return token_contract.functions.balanceOf(address).call() / (10 ** decimals)
+
 def send_token(to_address, amount):
     try:
-        to_address = Web3.to_checksum_address(to_address)
+        to_address = web3.Web3.to_checksum_address(to_address)
     except Exception as e:
         raise ValueError(f"Alamat tidak valid: {to_address}") from e
 
@@ -98,6 +102,12 @@ def send_tokens(csv_file, min_amount, max_amount):
     if not addresses:
         return
 
+    estimated_total = len(addresses) * ((min_amount + max_amount) / 2)
+    balance = get_token_balance(SENDER_ADDRESS)
+    if balance < estimated_total:
+        console.print(f"[red]❌ Saldo tidak cukup: hanya {balance:.2f} token tersedia[/red]")
+        return
+
     table = Table(title="📤 Status Pengiriman", show_lines=True)
     table.add_column("No", justify="center", style="bold")
     table.add_column("Address", justify="left", style="cyan")
@@ -117,10 +127,18 @@ def send_tokens(csv_file, min_amount, max_amount):
             for attempt in range(3):
                 try:
                     amount = round(random.uniform(min_amount, max_amount), 6)
+
+                    # Check balance before each send
+                    balance = get_token_balance(SENDER_ADDRESS)
+                    if balance < amount:
+                        raise Exception("Saldo tidak mencukupi untuk transaksi ini")
+
                     tx_hash = send_token(address, amount)
                     log_message = f"[green][{datetime.now()}] ✅ Sukses kirim {amount} token ke {address} | TX: {tx_hash}[/green]"
                     console.print(log_message)
                     table.add_row(str(i), address, str(amount), f"✅ {tx_hash[:10]}...")
+                    with open("logs.txt", "a") as log_file:
+                        log_file.write(f"{datetime.now()} | {address} | {amount} | {tx_hash}\n")
                     break
                 except Exception as e:
                     if attempt == 2:
@@ -163,8 +181,18 @@ def main():
     console.print("[bold cyan]=== BOT MULTISENDER ERC20 TERJADWAL ===[/bold cyan]", justify="center")
     convert_addresses_to_checksum("wallets.csv", CSV_FILE)
 
-    min_amt = float(Prompt.ask("🔢 Jumlah MIN token", default="5"))
-    max_amt = float(Prompt.ask("🔢 Jumlah MAX token", default="20"))
+    while True:
+        min_amt = float(Prompt.ask("🔢 Jumlah MIN token", default="5"))
+        max_amt = float(Prompt.ask("🔢 Jumlah MAX token", default="20"))
+        if min_amt <= 0 or max_amt <= 0:
+            console.print("[red]❌ Jumlah token harus lebih dari 0[/red]")
+        elif min_amt > max_amt:
+            console.print("[red]❌ MIN tidak boleh lebih besar dari MAX[/red]")
+        else:
+            break
+
+    estimated_total = len(load_wallets(CSV_FILE)) * ((min_amt + max_amt) / 2)
+    console.print(f"[yellow]📊 Estimasi total token yang akan dikirim: ~{estimated_total:.2f}[/yellow]")
 
     console.print(f"\n[blue]📦 Token dari: [white]{SENDER_ADDRESS}[/white][/blue]")
     console.print(f"[blue]📁 CSV Target: [white]{CSV_FILE}[/white][/blue]")
