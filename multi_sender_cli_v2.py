@@ -80,23 +80,32 @@ def send_tokens(csv_file, min_amount, max_amount):
             try:
                 amount = round(random.uniform(min_amount, max_amount), 6)
                 tx_hash = send_token(address, amount)
-                table.add_row(str(i), address, str(amount), f"[green]✅ Sukses: {tx_hash[:10]}...[/green]")
+                log_message = f"[green][{datetime.now()}] ✅ Sukses kirim {amount} token ke {address} | TX: {tx_hash}[/green]"
+                console.print(log_message)
+                table.add_row(str(i), address, str(amount), f"✅ {tx_hash[:10]}...")
                 break
             except Exception as e:
                 if attempt == 2:
-                    table.add_row(str(i), address, "-", f"[red]❌ Gagal: {e}[/red]")
+                    log_message = f"[red][{datetime.now()}] ❌ Gagal kirim ke {address}: {e}[/red]"
+                    console.print(log_message)
+                    table.add_row(str(i), address, "-", f"❌ {e}")
                 else:
                     time.sleep(2)
     console.print(table)
 
-def schedule_job(csv_file, min_amt, max_amt):
+def schedule_job(csv_file, min_amt, max_amt, schedule_time):
     def job():
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         console.print(f"\n[cyan]⏰ [{now}] Menjalankan pengiriman token terjadwal...[/cyan]")
         send_tokens(csv_file, min_amt, max_amt)
 
-    schedule.every().day.at("12:43").do(job)
-    console.print("[bold green]✅ Bot dijadwalkan setiap hari jam 09:00[/bold green]")
+    # Jalankan pertama kali saat script dimulai
+    console.print("[bold magenta]\n🚀 Pengiriman awal dimulai sekarang...[/bold magenta]")
+    send_tokens(csv_file, min_amt, max_amt)
+
+    # Jadwalkan untuk berikutnya
+    schedule.every().day.at(schedule_time).do(job)
+    console.print(f"[bold green]✅ Bot dijadwalkan setiap hari jam {schedule_time}[/bold green]")
 
     while True:
         schedule.run_pending()
@@ -112,9 +121,8 @@ def main():
     console.print(f"[blue]📁 CSV Target: [white]{csv_file}[/white][/blue]")
     console.print(f"[blue]🎯 Rentang Token: [white]{min_amt} - {max_amt}[/white][/blue]\n")
 
-    confirm = Prompt.ask("▶️ Mulai pengiriman terjadwal? (y/n)", choices=["y", "n"], default="y")
-    if confirm == "y":
-        schedule_job(csv_file, min_amt, max_amt)
+    schedule_time = Prompt.ask("⏰ Masukkan waktu pengiriman harian berikutnya (format 24 jam HH:MM)", default="09:00")
+    schedule_job(csv_file, min_amt, max_amt, schedule_time)
 
 if __name__ == "__main__":
     main()
