@@ -89,12 +89,16 @@ Buat file wallets.csv berisi address tujuan.
 
 ```nano wallets.csv```
 
+
 Contoh isi:
 address
 0x1234567890abcdef1234567890abcdef12345678
 0xabcdefabcdefabcdefabcdefabcdefabcdefabcd
 
 Script akan otomatis mengubah jadi checksum dan simpan ke wallets_checksummed.csv
+
+
+
 
 4. Jalankan Script
 
