@@ -5,21 +5,38 @@ import time
 from datetime import datetime
 import traceback
 import threading
+import logging
 
 from dotenv import load_dotenv
-from rich import print
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from rich.align import Align
+from rich.logging import RichHandler
 import web3
 import schedule
 
 # Init
 console = Console()
 load_dotenv()
+
+# Setup logging
+log_dir = "runtime_logs"
+os.makedirs(log_dir, exist_ok=True)
+log_path = os.path.join(log_dir, "runtime.log")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(message)s",
+    datefmt="[%Y-%m-%d %H:%M:%S]",
+    handlers=[
+        RichHandler(console=console, markup=True),
+        logging.FileHandler(log_path, encoding="utf-8")
+    ]
+)
+logger = logging.getLogger("bot")
 
 # Config
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
@@ -39,7 +56,7 @@ daily_sent_total = 0.0
 daily_lock = threading.Lock()
 
 if not TOKEN_CONTRACT_RAW:
-    console.print("[bold red]❌ Environment variable 'TOKEN_CONTRACT' tidak ditemukan atau kosong![/bold red]")
+    logger.error("❌ Environment variable 'TOKEN_CONTRACT' tidak ditemukan atau kosong!")
     exit()
 
 TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(TOKEN_CONTRACT_RAW)
@@ -48,7 +65,7 @@ CSV_FILE = "wallets_checksummed.csv"
 # Connect Web3
 w3 = web3.Web3(web3.Web3.HTTPProvider(RPC_URL))
 if not w3.is_connected():
-    console.print("[bold red]❌ Gagal terhubung ke jaringan! Cek RPC URL[/bold red]")
+    logger.error("❌ Gagal terhubung ke jaringan! Cek RPC URL")
     exit()
 
 # ERC20 ABI
@@ -101,7 +118,7 @@ def convert_addresses_to_checksum(input_file, output_file):
                 except:
                     continue
     except Exception as e:
-        console.print(f"[red]Gagal konversi checksum: {e}[/red]")
+        logger.error(f"Gagal konversi checksum: {e}")
 
 def load_wallets(csv_file):
     valid_addresses = []
@@ -115,7 +132,7 @@ def load_wallets(csv_file):
                 except:
                     continue
     except Exception as e:
-        console.print(f"[red]Gagal membaca file: {e}[/red]")
+        logger.error(f"Gagal membaca file: {e}")
     return valid_addresses
 
 def get_token_balance(address):
@@ -149,9 +166,9 @@ def send_token(to_address, amount):
 
     try:
         signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-        raw_tx = getattr(signed_tx, 'rawTransaction', None)
-        if raw_tx is None:
+        if not hasattr(signed_tx, 'rawTransaction'):
             raise ValueError("SignedTransaction tidak memiliki 'rawTransaction'")
+        raw_tx = signed_tx.rawTransaction
         tx_hash = w3.eth.send_raw_transaction(raw_tx)
         return w3.to_hex(tx_hash)
     except Exception as e:
@@ -164,6 +181,8 @@ def send_tokens(csv_file, min_amt, max_amt, count=None):
     if count:
         addresses = random.sample(addresses, min(count, len(addresses)))
 
+    logger.info(f"📦 Total address untuk dikirim: {len(addresses)}")
+
     log_lines = []
     for i, address in enumerate(addresses, start=1):
         try:
@@ -171,7 +190,7 @@ def send_tokens(csv_file, min_amt, max_amt, count=None):
 
             with daily_lock:
                 if DAILY_LIMIT > 0 and daily_sent_total + amount > DAILY_LIMIT:
-                    console.print(f"[bold red]🚫 Batas harian tercapai: {daily_sent_total:.4f} / {DAILY_LIMIT}[/bold red]")
+                    logger.warning(f"🚫 Batas harian tercapai: {daily_sent_total:.4f} / {DAILY_LIMIT}")
                     break
                 daily_sent_total += amount
 
@@ -182,18 +201,20 @@ def send_tokens(csv_file, min_amt, max_amt, count=None):
             eth_bal = get_eth_balance(SENDER_ADDRESS)
             log = f"{i}. [green]{address}[/green] ✅ {amount:.4f} | Token: [bold]{token_bal:.4f}[/bold] | TEA: [bold]{eth_bal:.4f}[/bold] | TX: {link}"
             console.print(log)
+            logger.info(log)
             log_lines.append(log)
             time.sleep(random.uniform(0.5, 1.2))
         except Exception as e:
             log = f"{i}. [red]{address}[/red] ❌ ERROR: {str(e)}"
             console.print(log)
+            logger.error(log)
             log_lines.append(log)
 
     panel = Panel("\n".join(log_lines), title="📬 Ringkasan Pengiriman", border_style="bright_blue")
     sisa_token = get_token_balance(SENDER_ADDRESS)
     sisa_eth = get_eth_balance(SENDER_ADDRESS)
     console.print(panel)
-    console.print(f"[green]✅ Sisa Token: {sisa_token:.4f} | Sisa TEA: {sisa_eth:.4f} | Terkirim hari ini: {daily_sent_total:.4f}[/green]")
+    logger.info(f"✅ Sisa Token: {sisa_token:.4f} | Sisa TEA: {sisa_eth:.4f} | Terkirim hari ini: {daily_sent_total:.4f}")
 
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -202,18 +223,29 @@ def send_tokens(csv_file, min_amt, max_amt, count=None):
         with open(log_file, "w", encoding="utf-8") as f:
             for line in log_lines:
                 f.write(f"{line}\n")
-        console.print(f"[blue]📝 Log disimpan di: {log_file}[/blue]")
+        logger.info(f"📝 Log disimpan di: {log_file}")
     except Exception as e:
-        console.print(f"[red]❌ Gagal menyimpan log: {e}[/red]")
+        logger.error(f"❌ Gagal menyimpan log: {e}")
 
-# Jadwal dan lainnya tetap
+def reset_daily_total():
+    global daily_sent_total
+    with daily_lock:
+        daily_sent_total = 0.0
+    logger.info("🔄 Batas harian direset ke 0")
+
+schedule.every().day.at("00:00").do(reset_daily_total)
+
+def run_scheduler_loop():
+    while True:
+        schedule.run_pending()
+        time.sleep(5)
 
 def schedule_job(csv_file, min_amt, max_amt, schedule_time):
     def job():
-        console.print("[bold magenta]\n🚀 Mengirim token ke 150 address acak...[/bold magenta]")
+        logger.info("\n🚀 Mengirim token ke 150 address acak...")
         send_tokens(csv_file, min_amt, max_amt, count=150)
 
-    console.print("[yellow]⏳ Menunggu waktu terjadwal...[/yellow]")
+    logger.info("⏳ Menunggu waktu terjadwal...")
     schedule.every().day.at(schedule_time).do(job)
 
     while True:
@@ -221,6 +253,8 @@ def schedule_job(csv_file, min_amt, max_amt, schedule_time):
         time.sleep(5)
 
 def run_bot():
+    threading.Thread(target=run_scheduler_loop, daemon=True).start()
+
     banner = Align.center("""
 ███╗   ███╗██╗   ██╗██╗██╗     ███████╗███████╗██████╗ 
 ████╗ ████║██║   ██║██║██║     ██╔════╝██╔════╝██╔══██╗
@@ -252,7 +286,7 @@ def run_bot():
         send_tokens(CSV_FILE, min_amt, max_amt, count=count)
         schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
     elif mode == "3":
-        console.print("[bold yellow]🔍 Pengujian: Kirim ke 10 address acak...[/bold yellow]")
+        logger.info("🔍 Pengujian: Kirim ke 10 address acak...")
         send_tokens(CSV_FILE, min_amt, max_amt, count=10)
         schedule_time = Prompt.ask("⏰ Jadwal pengiriman (HH:MM)", default="09:00")
         schedule_job(CSV_FILE, min_amt, max_amt, schedule_time)
