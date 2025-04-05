@@ -227,4 +227,74 @@ def show_log():
 def send_tokens():
     global daily_sent_total
     if not wallets_all:
-       
+        logger.warning("❗ Daftar wallet kosong.")
+        return
+
+    random.shuffle(wallets_all)
+    total = len(wallets_all)
+    logger.info(f"🚀 Mulai pengiriman batch ke {total} wallet...")
+
+    for i, to_address in enumerate(wallets_all):
+        try:
+            amount = 1 * (10 ** decimals)
+            
+            # Cek apakah daily limit tercapai
+            if daily_sent_total + amount > DAILY_LIMIT:
+                logger.warning(f"🛑 Daily limit tercapai. Total terkirim hari ini: {daily_sent_total:.4f} {TOKEN_NAME}")
+                break
+            
+            nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
+            tx = token_contract.functions.transfer(to_address, amount).build_transaction({
+                'from': SENDER_ADDRESS,
+                'nonce': nonce,
+                'gas': 60000,
+                'gasPrice': w3.eth.gas_price
+            })
+            signed = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+            tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+            
+            # Update total terkirim
+            daily_sent_total += amount
+            logger.info(f"✅ Tx terkirim ke {to_address} | Hash: {tx_hash.hex()}")
+            
+            time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
+        except Exception as e:
+            if "too many requests" in str(e).lower():
+                logger.warning("⚠️ Terkena limit RPC. Menunggu 60 detik...")
+                time.sleep(60)
+            else:
+                logger.error(f"❌ Gagal kirim ke {to_address}: {e}")
+
+# Reset daily_sent_total setiap hari pada jam 00:00
+def reset_daily_limit():
+    global daily_sent_total
+    schedule.every().day.at("00:00").do(lambda: (daily_sent_total := 0.0))
+    logger.info("⏰ Reset limit harian dimulai setiap jam 00:00")
+
+# Penjadwalan pengiriman token setiap jam
+
+def start_scheduler():
+    schedule.every().hour.do(send_tokens)
+    reset_daily_limit()
+    logger.info("⏰ Penjadwalan pengiriman token setiap jam telah dimulai.")
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+# Menu interaktif (opsional manual)
+
+def interactive_menu():
+    log_balances()
+    threading.Thread(target=start_scheduler, daemon=True).start()
+    console.print("[cyan]Bot aktif. Pengiriman otomatis dijadwalkan setiap jam.[/cyan]")
+    while True:
+        action = Prompt.ask("\n[bold yellow]Perintah[/bold yellow] ([green]log[/green]/[magenta]live[/magenta]/[red]exit[/red])", default="exit")
+        if action == "log":
+            show_log()
+        elif action == "live":
+            show_log_live()
+        elif action == "exit":
+            break
+
+if __name__ == "__main__":
+    interactive_menu()
