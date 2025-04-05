@@ -9,19 +9,13 @@ import logging
 
 from dotenv import load_dotenv
 from rich.console import Console
-from rich.prompt import Prompt
-from rich.table import Table
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
-from rich.align import Align
 from rich.logging import RichHandler
 from rich.layout import Layout
 from rich.live import Live
-from rich.text import Text
-from rich import box
 import web3
 import schedule
-from web3.exceptions import TransactionNotFound
 
 # Init
 console = Console()
@@ -36,7 +30,7 @@ BANNER = """
 ███████╗██║  ██║╚██████╔╝╚██████╔╝██║     ╚██████╔╝██║ ╚████║
 ╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝      ╚═════╝ ╚═╝  ╚═══╝
 """
-console.print(Panel.fit(BANNER, title="[bold green]🚀 ERC20 Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
+console.print(Panel.fit(BANNER, title="[bold green]🚀 ERC20 Sender Bot[/bold green]", border_style="cyan"))
 
 # Setup logging
 log_dir = "runtime_logs"
@@ -198,30 +192,6 @@ def show_log_live():
         except KeyboardInterrupt:
             return
 
-# Fungsi tampilkan log sekali saja
-
-def show_log():
-    log_file = os.path.join("runtime_logs", "runtime.log")
-    if not os.path.exists(log_file):
-        console.print("[red]Log file tidak ditemukan.[/red]")
-        return
-
-    with open(log_file, "r", encoding="utf-8") as f:
-        lines = f.readlines()[-20:]
-
-    table = Table(title="📜 Log Terbaru", show_header=True, header_style="bold cyan")
-    table.add_column("Waktu", style="dim")
-    table.add_column("Pesan")
-
-    for line in lines:
-        try:
-            timestamp, msg = line.strip().split(" ", 1)
-            table.add_row(timestamp, msg)
-        except:
-            continue
-
-    console.print(table)
-
 # Fungsi kirim token acak dengan adaptive delay
 
 def send_tokens():
@@ -259,42 +229,4 @@ def send_tokens():
             
             time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
         except Exception as e:
-            if "too many requests" in str(e).lower():
-                logger.warning("⚠️ Terkena limit RPC. Menunggu 60 detik...")
-                time.sleep(60)
-            else:
-                logger.error(f"❌ Gagal kirim ke {to_address}: {e}")
-
-# Reset daily_sent_total setiap hari pada jam 00:00
-def reset_daily_limit():
-    global daily_sent_total
-    schedule.every().day.at("00:00").do(lambda: (daily_sent_total := 0.0))
-    logger.info("⏰ Reset limit harian dimulai setiap jam 00:00")
-
-# Penjadwalan pengiriman token setiap jam
-
-def start_scheduler():
-    schedule.every().hour.do(send_tokens)
-    reset_daily_limit()
-    logger.info("⏰ Penjadwalan pengiriman token setiap jam telah dimulai.")
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
-
-# Menu interaktif (opsional manual)
-
-def interactive_menu():
-    log_balances()
-    threading.Thread(target=start_scheduler, daemon=True).start()
-    console.print("[cyan]Bot aktif. Pengiriman otomatis dijadwalkan setiap jam.[/cyan]")
-    while True:
-        action = Prompt.ask("\n[bold yellow]Perintah[/bold yellow] ([green]log[/green]/[magenta]live[/magenta]/[red]exit[/red])", default="exit")
-        if action == "log":
-            show_log()
-        elif action == "live":
-            show_log_live()
-        elif action == "exit":
-            break
-
-if __name__ == "__main__":
-    interactive_menu()
+            if "too many
