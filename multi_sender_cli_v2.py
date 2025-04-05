@@ -278,7 +278,7 @@ def run_sending():
 def interactive_menu():
     while True:
         console.print("\n[bold cyan]📋 MENU UTAMA[/bold cyan]")
-        console.print("1. Kirim token sekarang")
+        console.print("1. Kirim token sekarang (otomatis)")
         console.print("2. Lihat saldo")
         console.print("3. Reset daftar yang sudah dikirim")
         console.print("4. Keluar")
@@ -286,7 +286,13 @@ def interactive_menu():
         pilihan = input("Pilih opsi (1-4): ").strip()
 
         if pilihan == "1":
+            logger.info("[AUTO MODE - MANUAL] Bot akan terus mengirim batch secara otomatis.")
+            schedule.every(IDLE_AFTER_BATCH_SECONDS).seconds.do(run_sending)
+            schedule.every().day.at("00:00").do(reset_sent_wallets)
             run_sending()
+            while True:
+                schedule.run_pending()
+                time.sleep(1)
         elif pilihan == "2":
             log_balances()
         elif pilihan == "3":
