@@ -95,7 +95,7 @@ def schedule_job(csv_file, min_amt, max_amt):
         console.print(f"\n[cyan]⏰ [{now}] Menjalankan pengiriman token terjadwal...[/cyan]")
         send_tokens(csv_file, min_amt, max_amt)
 
-    schedule.every().day.at("09:00").do(job)
+    schedule.every().day.at("12:43").do(job)
     console.print("[bold green]✅ Bot dijadwalkan setiap hari jam 09:00[/bold green]")
 
     while True:
