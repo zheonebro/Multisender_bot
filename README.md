@@ -128,6 +128,11 @@ Ikuti instruksi interaktif untuk:
 
 ---
 
+
+### setelah bot jalan gunakan perintah ctrl a + d agar screen tetep berjalan di background
+
+
+
 ## 📝 Log & Output
 
 - Semua transaksi berhasil/gagal dicatat di file `logs.txt`
