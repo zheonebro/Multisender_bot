@@ -48,7 +48,7 @@ def load_wallets(csv_file):
     try:
         with open(csv_file, newline='') as f:
             reader = csv.DictReader(f)
-            return [row['address'] for row in reader]
+            return [Web3.to_checksum_address(row['address']) for row in reader]
     except Exception as e:
         console.print(f"[red]Gagal membaca file: {e}[/red]")
         return []
