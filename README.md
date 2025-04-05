@@ -118,7 +118,7 @@ address
 ### Jalankan script utama
 
 ```bash
-python3 main.py
+python3 multi_sender_cli_v2.py
 ```
 
 Ikuti instruksi interaktif untuk:
