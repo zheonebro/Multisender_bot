@@ -6,7 +6,7 @@ from datetime import datetime, time as dt_time
 import threading
 import logging
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
@@ -30,7 +30,7 @@ BANNER = """
 ███████╗██║  ██║╚██████╔╝╚██████╔╝██║     ╚██████╔╝██║ ╚████║
 ╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝      ╚═════╝ ╚═╝  ╚═══╝
 """
-console.print(Panel.fit(BANNER, title="[bold green]\U0001F680 TEA SEPOLIA TESNET Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
+console.print(Panel.fit(BANNER, title="[bold green]🚀 TEA SEPOLIA TESNET Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
 
 # Setup logging
 log_dir = "runtime_logs"
@@ -61,9 +61,9 @@ file_handler.setFormatter(formatter)
 logger.addHandler(stream_handler)
 logger.addHandler(file_handler)
 
-logger.info("[LOG] Logging timezone aktif: Asia/Jakarta")
+logger.info("🕒 Logging timezone aktif: Asia/Jakarta")
 
-# Load env
+# Config
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 RAW_SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 RPC_URL = os.getenv("INFURA_URL")
@@ -77,7 +77,12 @@ if not PRIVATE_KEY or not RAW_SENDER_ADDRESS or not RPC_URL:
 
 SENDER_ADDRESS = web3.Web3.to_checksum_address(RAW_SENDER_ADDRESS)
 
-DAILY_LIMIT = float(os.getenv("DAILY_LIMIT", "0"))
+DAILY_LIMIT_RAW = os.getenv("DAILY_LIMIT", "0")
+try:
+    DAILY_LIMIT = float(DAILY_LIMIT_RAW)
+except ValueError:
+    DAILY_LIMIT = 0
+
 MIN_DELAY_SECONDS = float(os.getenv("MIN_DELAY_SECONDS", "0.5"))
 MAX_DELAY_SECONDS = float(os.getenv("MAX_DELAY_SECONDS", "2"))
 
@@ -96,187 +101,169 @@ if not w3.is_connected():
     logger.error("❌ Gagal terhubung ke jaringan! Cek RPC URL")
     exit()
 
-ERC20_ABI = [...]  # Disingkat untuk tampilan
+# ERC20 ABI
+ERC20_ABI = [
+    {
+        "inputs": [
+            {"internalType": "address", "name": "_to", "type": "address"},
+            {"internalType": "uint256", "name": "_value", "type": "uint256"}
+        ],
+        "name": "transfer",
+        "outputs": [
+            {"internalType": "bool", "name": "", "type": "bool"}
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [
+            {"internalType": "uint8", "name": "", "type": "uint8"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "_owner", "type": "address"}
+        ],
+        "name": "balanceOf",
+        "outputs": [
+            {"internalType": "uint256", "name": "balance", "type": "uint256"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "name",
+        "outputs": [
+            {"internalType": "string", "name": "", "type": "string"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
 
+# Buat instance kontrak
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
-decimals = token_contract.functions.decimals().call()
-TOKEN_NAME = token_contract.functions.name().call()
+TOKEN_DECIMALS = token_contract.functions.decimals().call()
 
+# Load dompet yang sudah dikirim
+sent_wallets = set()
+if os.path.exists(SENT_FILE):
+    with open(SENT_FILE, "r") as f:
+        sent_wallets.update(line.strip() for line in f if line.strip())
+
+# Fungsi bantu: baca CSV
+def load_wallets():
+    with open(CSV_FILE, newline='') as csvfile:
+        reader = csv.DictReader(csvfile)
+        return [row for row in reader if row["address"] not in sent_wallets]
+
+# Cek saldo cukup
+def has_sufficient_balance(amount_int):
+    balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
+    return balance >= amount_int
+
+# Log saldo
+def log_balance():
+    balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
+    balance_token = balance / (10 ** TOKEN_DECIMALS)
+    logger.info(f"💰 Sisa saldo token: {balance_token:.4f}")
+
+# Dapatkan nonce terkini
 nonce_lock = threading.Lock()
-global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
-wallets_all = []
-MAX_ADDRESS_PER_DAY = 150
-daily_address_sent = 0
+def get_nonce():
+    with nonce_lock:
+        return w3.eth.get_transaction_count(SENDER_ADDRESS, 'pending')
 
-def is_reset_time():
-    now = datetime.now(JAKARTA_TZ)
-    return now.time() >= dt_time(0, 0) and now.time() < dt_time(0, 1)
+# Kirim token dengan retry otomatis
+@tenacity.retry(
+    wait=tenacity.wait_exponential(multiplier=1, min=5, max=60),
+    stop=tenacity.stop_after_attempt(5),
+    retry=tenacity.retry_if_exception_type(Exception),
+    reraise=True
+)
+def send_token(to_address, amount_float):
+    to_address = web3.Web3.to_checksum_address(to_address)
+    amount = int(amount_float * (10 ** TOKEN_DECIMALS))
 
-def schedule_reset_daily():
-    def check_and_reset():
-        if is_reset_time():
-            reset_sent_wallets()
-    schedule.every().minute.do(check_and_reset)
+    if not has_sufficient_balance(amount):
+        logger.warning(f"🚫 Saldo tidak cukup untuk mengirim {amount_float} ke {to_address}")
+        return
 
-def load_sent_wallets():
-    if not os.path.exists(SENT_FILE):
-        return set()
-    with open(SENT_FILE, 'r') as f:
-        return set(line.strip() for line in f if line.strip())
-
-def save_sent_wallet(address):
-    global daily_address_sent
-    with open(SENT_FILE, 'a') as f:
-        f.write(f"{address}\n")
-    daily_address_sent += 1
-
-def load_wallets(csv_file):
-    sent_addresses = load_sent_wallets()
-    valid_addresses = []
-    if not os.path.exists(csv_file):
-        logger.error(f"❌ File {csv_file} tidak ditemukan!")
-        return valid_addresses
-    with open(csv_file, newline='') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            try:
-                address = web3.Web3.to_checksum_address(row['address'].strip())
-                if address not in sent_addresses:
-                    valid_addresses.append(address)
-            except:
-                continue
-    return valid_addresses
-
-def reset_sent_wallets():
-    global daily_sent_total, daily_address_sent
     try:
-        open(SENT_FILE, 'w').close()
-        daily_sent_total = 0
-        daily_address_sent = 0
-        logger.info("🗑️ File sent_wallets.txt telah direset.")
-    except Exception as e:
-        logger.error(f"❌ Gagal mereset sent_wallets.txt: {e}")
+        nonce = get_nonce()
+        tx = token_contract.functions.transfer(to_address, amount).build_transaction({
+            'from': SENDER_ADDRESS,
+            'nonce': nonce,
+            'gas': 100_000,
+            'gasPrice': w3.to_wei(MAX_GAS_PRICE_GWEI, 'gwei')
+        })
 
-def log_balances():
-    try:
-        token_balance_raw = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
-        token_balance = token_balance_raw / (10 ** decimals)
-        eth_balance_wei = w3.eth.get_balance(SENDER_ADDRESS)
-        eth_balance = w3.from_wei(eth_balance_wei, 'ether')
-        gas_price = w3.eth.gas_price
-        estimated_tx_possible = int(eth_balance_wei / (50000 * gas_price))
-        logger.info(f"📊 Token balance: {token_balance:.4f} {TOKEN_NAME}")
-        logger.info(f"⛽ TEA balance (gas): {eth_balance:.6f} TEA")
-        logger.info(f"🔗 Estimasi TX sisa: {estimated_tx_possible} transaksi")
-    except Exception as e:
-        logger.error(f"Gagal membaca balance: {e}")
+        signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        logger.info(f"✅ Transfer ke {to_address} berhasil! TX: {EXPLORER_URL}tx/{tx_hash.hex()}")
 
-@tenacity.retry(wait=tenacity.wait_exponential(min=5, max=60), stop=tenacity.stop_after_attempt(5), retry=tenacity.retry_if_exception_type(Exception))
-def safe_send_transaction(tx):
-    try:
-        signed = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-        return w3.eth.send_raw_transaction(signed.raw_transaction)
+        with open(SENT_FILE, "a") as f:
+            f.write(f"{to_address}\n")
+
     except Exception as e:
-        logger.error(f"Gagal kirim TX: {e}")
+        logger.error(f"⚠️ Gagal kirim ke {to_address}: {e}")
         raise
 
-THREAD_WORKERS = 5
-BATCH_SIZE = 10
-IDLE_AFTER_BATCH_SECONDS = 300
-MIN_TOKEN = 5
-MAX_TOKEN = 50
+# Proses batch
+def process_batch():
+    total_sent = 0
+    wallets = load_wallets()
+    logger.info(f"🔎 Ditemukan {len(wallets)} wallet baru untuk diproses")
 
-def process_batch(addresses_batch, batch_id):
-    global global_nonce, daily_sent_total, daily_address_sent
-    for i, to_address in enumerate(tqdm(addresses_batch, desc=f"BATCH {batch_id}")):
-        try:
-            token_amount = random.randint(MIN_TOKEN, MAX_TOKEN)
-            if DAILY_LIMIT > 0 and (daily_sent_total + token_amount) > DAILY_LIMIT:
-                logger.warning(f"[BATCH {batch_id}] ⚠️ Batas token harian tercapai.")
-                return
-            if daily_address_sent >= MAX_ADDRESS_PER_DAY:
-                logger.warning(f"[BATCH {batch_id}] ⚠️ Jumlah address harian tercapai.")
-                return
-            amount = token_amount * (10 ** decimals)
-            with nonce_lock:
-                nonce = global_nonce
-                global_nonce += 1
-                tx = token_contract.functions.transfer(to_address, amount).build_transaction({
-                    'from': SENDER_ADDRESS,
-                    'nonce': nonce,
-                    'gas': 60000,
-                    'gasPrice': min(w3.eth.gas_price, w3.to_wei(MAX_GAS_PRICE_GWEI, 'gwei'))
-                })
-                tx_hash = safe_send_transaction(tx)
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-            if receipt.status == 1:
-                logger.info(f"[BATCH {batch_id}] ✅ Sent {token_amount} {TOKEN_NAME} to {to_address}")
-                logger.info(f"[TX SUCCESS] {EXPLORER_URL}tx/{tx_hash.hex()}")
-                save_sent_wallet(to_address)
-                daily_sent_total += token_amount
-            else:
-                logger.error(f"[BATCH {batch_id}] ❌ TX FAILED {EXPLORER_URL}tx/{tx_hash.hex()}")
-        except Exception as e:
-            logger.error(f"[BATCH {batch_id}] ❌ Failed to send to {to_address}: {e}")
-        time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
+    log_balance()
 
-def run_sending():
-    logger.info("💡 Starting sender bot...")
-    log_balances()
-    wallets = load_wallets(CSV_FILE)
-    total = len(wallets)
-    if total == 0:
-        logger.info("🚫 Tidak ada wallet yang akan dikirimi.")
-        return
-    batches = [wallets[i:i+BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
-    try:
-        with ThreadPoolExecutor(max_workers=THREAD_WORKERS) as executor:
-            for idx, batch in enumerate(batches):
-                executor.submit(process_batch, batch, idx+1)
-                logger.info(f"🛌 Menunggu {IDLE_AFTER_BATCH_SECONDS} detik sebelum batch berikutnya...")
-                for remaining in range(IDLE_AFTER_BATCH_SECONDS, 0, -1):
-                    logger.info(f"⏸ Idle... {remaining} detik tersisa")
-                    time.sleep(1)
-    except KeyboardInterrupt:
-        logger.warning("⛔ Dihentikan oleh pengguna. Keluar...")
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = []
+        for row in wallets:
+            to_address = row["address"]
+            amount = float(row["amount"])
 
-def interactive_menu():
-    while True:
-        console.print("\n[bold cyan]📋 MENU UTAMA[/bold cyan]")
-        console.print("1. Kirim token sekarang (otomatis)")
-        console.print("2. Lihat saldo")
-        console.print("3. Reset daftar yang sudah dikirim")
-        console.print("4. Keluar")
-        pilihan = input("Pilih opsi (1-4): ").strip()
-        if pilihan == "1":
-            logger.info("[AUTO MODE - MANUAL] Mulai pengiriman otomatis.")
-            schedule.every(IDLE_AFTER_BATCH_SECONDS).seconds.do(run_sending)
-            schedule_reset_daily()
-            run_sending()
-            while True:
-                schedule.run_pending()
-                time.sleep(1)
-        elif pilihan == "2":
-            log_balances()
-        elif pilihan == "3":
-            reset_sent_wallets()
-        elif pilihan == "4":
-            print("👋 Keluar...")
-            break
-        else:
-            print("❌ Pilihan tidak valid!")
+            if DAILY_LIMIT and total_sent + amount > DAILY_LIMIT:
+                logger.warning("⛔ Melebihi batas harian. Pengiriman dihentikan sementara.")
+                break
 
-if __name__ == "__main__":
+            futures.append(executor.submit(send_token, to_address, amount))
+            total_sent += amount
+            time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
+
+        for future in tqdm(as_completed(futures), total=len(futures), desc="⏳ Menyelesaikan transaksi"):
+            pass
+
+    log_balance()
+
+# Reset harian
+def reset_daily_log():
+    with open(SENT_FILE, "w") as f:
+        f.write("")
+    logger.info("🔄 Daftar wallet terkirim telah di-reset.")
+
+# Jadwal reset harian
+schedule.every().day.at("00:00").do(reset_daily_log)
+
+# Entry point
+def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--auto", action="store_true", help="Mode otomatis dengan delay antar batch")
+    parser.add_argument("--run-once", action="store_true", help="Jalankan hanya sekali tanpa jadwal")
     args = parser.parse_args()
-    if args.auto:
-        logger.info("[AUTO MODE] Memulai dalam mode otomatis.")
-        schedule.every(IDLE_AFTER_BATCH_SECONDS).seconds.do(run_sending)
-        schedule_reset_daily()
-        run_sending()
+
+    if args.run_once:
+        process_batch()
+    else:
+        logger.info("🕒 Menjalankan dengan penjadwalan setiap 5 menit")
+        schedule.every(5).minutes.do(process_batch)
         while True:
             schedule.run_pending()
             time.sleep(1)
-    else:
-        interactive_menu()
+
+if __name__ == "__main__":
+    main()
