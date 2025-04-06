@@ -30,23 +30,39 @@ BANNER = """
 ███████╗██║  ██║╚██████╔╝╚██████╔╝██║     ╚██████╔╝██║ ╚████║
 ╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝      ╚═════╝ ╚═╝  ╚═══╝
 """
-console.print(Panel.fit(BANNER, title="[bold green]🚀 TEA SEPOLIA TESNET Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
+console.print(Panel.fit(BANNER, title="[bold green]\ud83d\ude80 TEA SEPOLIA TESNET Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
 
 # Setup logging
 log_dir = "runtime_logs"
 os.makedirs(log_dir, exist_ok=True)
 log_path = os.path.join(log_dir, "runtime.log")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(message)s",
-    datefmt="[%Y-%m-%d %H:%M:%S]",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(log_path, encoding="utf-8")
-    ]
-)
+JAKARTA_TZ = pytz.timezone("Asia/Jakarta")
+
+class JakartaFormatter(logging.Formatter):
+    converter = lambda *args: datetime.now(JAKARTA_TZ).timetuple()
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, JAKARTA_TZ)
+        if datefmt:
+            return dt.strftime(datefmt)
+        else:
+            return dt.isoformat()
+
 logger = logging.getLogger("bot")
+logger.setLevel(logging.INFO)
+
+stream_handler = logging.StreamHandler()
+file_handler = logging.FileHandler(log_path, encoding="utf-8")
+
+formatter = JakartaFormatter(fmt="%(asctime)s %(message)s", datefmt="[%Y-%m-%d %H:%M:%S]")
+stream_handler.setFormatter(formatter)
+file_handler.setFormatter(formatter)
+
+logger.addHandler(stream_handler)
+logger.addHandler(file_handler)
+
+logger.info("\ud83d\udd52 Logging timezone aktif: Asia/Jakarta")
+
 
 # Config
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
