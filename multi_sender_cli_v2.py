@@ -16,7 +16,6 @@ import tenacity
 import schedule
 from tqdm import tqdm
 import pytz
-import signal
 
 # Init
 console = Console()
@@ -127,6 +126,16 @@ token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
 decimals = token_contract.functions.decimals().call()
 TOKEN_NAME = token_contract.functions.name().call()
 
+def log_balances():
+    try:
+        token_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** decimals)
+        native_balance = w3.eth.get_balance(SENDER_ADDRESS) / (10 ** 18)
+
+        logger.info(f"📦 Token {TOKEN_NAME} balance: {token_balance:.4f}")
+        logger.info(f"⛽ Native token balance (ETH): {native_balance:.4f}")
+    except Exception as e:
+        logger.error(f"❌ Gagal membaca saldo: {e}")
+
 nonce_lock = threading.Lock()
 global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
 wallets_all = []
@@ -138,16 +147,26 @@ JAKARTA_TZ = pytz.timezone("Asia/Jakarta")
 
 user_defined_daily_wallet_limit = DAILY_RANDOM_LIMIT
 is_running = False
+has_reset_today = False
 
 # Time checker
 def is_reset_time():
     now = datetime.now(JAKARTA_TZ)
     return now.time() >= dt_time(0, 0) and now.time() < dt_time(0, 1)
 
+def reset_sent_wallets():
+    if os.path.exists(SENT_FILE):
+        os.remove(SENT_FILE)
+        logger.info("🔄 Daftar wallet terkirim telah direset untuk hari baru.")
+
 def schedule_reset_daily():
     def check_and_reset():
-        if is_reset_time():
+        global has_reset_today
+        if is_reset_time() and not has_reset_today:
             reset_sent_wallets()
+            has_reset_today = True
+        elif not is_reset_time():
+            has_reset_today = False
     schedule.every().minute.do(check_and_reset)
 
 # Load wallet
@@ -183,6 +202,34 @@ def load_wallets(csv_file, limit):
 
     return valid_addresses
 
+# Dummy batch processor
+
+def process_batch(batch, batch_number):
+    logger.info(f"🛠️ Memproses batch ke-{batch_number} dengan {len(batch)} wallet...")
+    for wallet in batch:
+        time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
+        logger.info(f"✅ Token dikirim ke: {wallet}")
+        save_sent_wallet(wallet)
+
+# Interaktif menu
+def input_with_timeout(prompt, timeout=10):
+    result = [None]
+
+    def get_input():
+        try:
+            result[0] = input(f"{prompt} [default: 200, auto dalam {timeout} detik]: ")
+        except Exception:
+            result[0] = ""
+
+    input_thread = threading.Thread(target=get_input)
+    input_thread.start()
+    input_thread.join(timeout)
+
+    if input_thread.is_alive():
+        print("\n⏱️ Tidak ada input. Gunakan default 200.")
+        return ""
+    return result[0]
+
 # Main runner
 def run_sending():
     global user_defined_daily_wallet_limit, is_running
@@ -209,36 +256,21 @@ def run_sending():
 
         batches = [wallets[i:i+10] for i in range(0, total, 10)]
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            for idx, batch in enumerate(batches):
+        for idx, batch in enumerate(batches):
+            with ThreadPoolExecutor(max_workers=5) as executor:
                 executor.submit(process_batch, batch, idx+1)
-                logger.info(f"🛌 Menunggu selama 300 detik sebelum batch berikutnya...")
-                for remaining in range(300, 0, -1):
-                    logger.info(f"⏸ Idle... {remaining} detik tersisa")
-                    time.sleep(1)
+            logger.info(f"📈 Batch {idx+1} selesai. Menunggu 300 detik...")
+            for remaining in range(300, 0, -1):
+                logger.info(f"⏸ Idle... {remaining} detik tersisa")
+                time.sleep(1)
     except KeyboardInterrupt:
         logger.warning("⛔ Pengguna menghentikan proses. Menutup dengan aman...")
     finally:
         is_running = False
 
-# Interaktif menu
-def input_with_timeout(prompt, timeout=10):
-    console.print(f"{prompt} [default: 200, auto dalam {timeout} detik]: ", end="", style="bold yellow")
-    def timeout_handler(signum, frame):
-        raise TimeoutError
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(timeout)
-    try:
-        return input()
-    except TimeoutError:
-        print("\n⏱️ Tidak ada input. Gunakan default 200.")
-        return ""
-    finally:
-        signal.alarm(0)
-
 if __name__ == "__main__":
-    run_sending()
-
-
-# interactive_menu tidak berubah dari versi sebelumnya
-# CLI tidak berubah dari versi sebelumnya
+    schedule_reset_daily()
+    while True:
+        schedule.run_pending()
+        run_sending()
+        time.sleep(5)
