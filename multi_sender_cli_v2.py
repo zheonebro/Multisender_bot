@@ -75,6 +75,10 @@ TOKEN_CONTRACT_RAW = os.getenv("TOKEN_CONTRACT")
 MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "50"))
 EXPLORER_URL = "https://sepolia.tea.xyz/"
 
+MAX_THREADS = int(os.getenv("MAX_THREADS", 5))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", 10))
+IDLE_SECONDS = int(os.getenv("IDLE_SECONDS", 30))
+
 if not PRIVATE_KEY or not RAW_SENDER_ADDRESS or not RPC_URL:
     logger.error("❌ PRIVATE_KEY, SENDER_ADDRESS, atau INFURA_URL tidak ditemukan di .env!")
     exit()
@@ -105,6 +109,30 @@ if not w3.is_connected():
     logger.error("❌ Gagal terhubung ke jaringan! Cek RPC URL")
     exit()
 
+# Token Contract Setup
+TOKEN_ABI = [
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "_to", "type": "address"},
+            {"name": "_value", "type": "uint256"}
+        ],
+        "name": "transfer",
+        "outputs": [{"name": "", "type": "bool"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [{"name": "", "type": "uint8"}],
+        "type": "function"
+    }
+]
+
+token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=TOKEN_ABI)
+TOKEN_DECIMALS = token_contract.functions.decimals().call()
+
 # Global Rate Limiting State
 rate_limit_lock = threading.Lock()
 last_sent_time = 0
@@ -116,6 +144,13 @@ failed_addresses = []
 def initialize_nonce():
     global current_nonce
     current_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
+
+def get_next_nonce():
+    global current_nonce
+    with nonce_lock:
+        nonce = current_nonce
+        current_nonce += 1
+        return nonce
 
 def load_wallets():
     wallets = []
@@ -138,171 +173,20 @@ def log_transaction(to_address, amount, status, tx_hash_or_error):
         timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"{timestamp},{to_address},{amount},{status},{tx_hash_or_error}\n")
 
-@tenacity.retry(stop=tenacity.stop_after_attempt(3), wait=tenacity.wait_fixed(2))
-def send_token(to_address, amount_float):
-    global current_nonce
-    try:
-        to = web3.Web3.to_checksum_address(to_address)
-        token = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
-        decimals = token.functions.decimals().call()
-        amount = int(amount_float * (10 ** decimals))
-
-        gas_price = w3.eth.gas_price
-        if gas_price > web3.Web3.to_wei(MAX_GAS_PRICE_GWEI, "gwei"):
-            logger.warning(f"⛽ Gas price terlalu tinggi: {w3.from_wei(gas_price, 'gwei')} Gwei")
-            return False
-
-        with nonce_lock:
-            nonce = current_nonce
-
-        tx = token.functions.transfer(to, amount).build_transaction({
-            "from": SENDER_ADDRESS,
-            "nonce": nonce,
-            "gasPrice": gas_price,
-            "gas": 60000,
-        })
-
-        signed = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-        tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
-
-        with nonce_lock:
-            current_nonce += 1
-
-        tx_hash_str = tx_hash.hex()
-        logger.info(f"✅ TX terkirim ke {to_address} | Jumlah: {amount_float} | TxHash: {tx_hash_str}")
-        log_transaction(to_address, amount_float, "SUCCESS", tx_hash_str)
-
-        with open(SENT_FILE, "a") as f:
-            f.write(f"{to_address.lower()}\n")
-
-        return True
-
-    except Exception as e:
-        logger.error(f"❌ Gagal kirim ke {to_address}: {e}")
-        log_transaction(to_address, amount_float, "FAILED", str(e))
-        failed_addresses.append(to_address)
-        return False
-
-# Rate-limited send wrapper
-def rate_limited_send(to_address, amount_float):
-    global last_sent_time
-    with rate_limit_lock:
-        now = time.time()
-        elapsed = now - last_sent_time
-        delay = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
-        if delay > 0:
-            time.sleep(delay)
-        last_sent_time = time.time()
-    return send_token(to_address, amount_float)
-
-# ERC20 ABI
-ERC20_ABI = [
-    {
-        "inputs": [
-            {"internalType": "address", "name": "_to", "type": "address"},
-            {"internalType": "uint256", "name": "_value", "type": "uint256"}
-        ],
-        "name": "transfer",
-        "outputs": [
-            {"internalType": "bool", "name": "", "type": "bool"}
-        ],
-        "stateMutability": "nonpayable",
-        "type": "function"
-    },
-    {
-        "inputs": [],
-        "name": "decimals",
-        "outputs": [
-            {"internalType": "uint8", "name": "", "type": "uint8"}
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {"internalType": "address", "name": "_owner", "type": "address"}
-        ],
-        "name": "balanceOf",
-        "outputs": [
-            {"internalType": "uint256", "name": "balance", "type": "uint256"}
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [],
-        "name": "name",
-        "outputs": [
-            {"internalType": "string", "name": "", "type": "string"}
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    }
-]
-
-# Buat instance kontrak
-token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
-TOKEN_DECIMALS = token_contract.functions.decimals().call()
-
-
-# CLI Dashboard
-
-def show_dashboard():
-    wallets = load_wallets()
-    total_wallets = len(wallets)
-    total_sent = len(open(SENT_FILE).readlines()) if os.path.exists(SENT_FILE) else 0
-    table = Table(title="📊 DASHBOARD PENGIRIMAN TOKEN")
-    table.add_column("Keterangan", style="cyan")
-    table.add_column("Jumlah", style="magenta")
-
-    table.add_row("Total Wallet di CSV", str(total_wallets + total_sent))
-    table.add_row("Sudah Dikirim", str(total_sent))
-    table.add_row("Menunggu Dikirim", str(total_wallets))
-
-    console.print(table)
-
-def process_batch():
-    wallets = load_wallets()
-    if not wallets:
-        logger.info("✅ Tidak ada wallet yang perlu dikirimi saat ini.")
-        return
-
-    logger.info(f"🔄 Memulai pengiriman ke {len(wallets)} wallet...")
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(rate_limited_send, addr, amt): (addr, amt) for addr, amt in wallets}
-        for future in as_completed(futures):
-            addr, amt = futures[future]
-            try:
-                result = future.result()
-            except Exception as e:
-                logger.error(f"❌ Error saat mengirim ke {addr}: {e}")
-
-    if failed_addresses:
-        with open("failed_wallets.txt", "w") as f:
-            for addr in failed_addresses:
-                f.write(f"{addr}\n")
-        logger.info(f"⚠️ {len(failed_addresses)} wallet gagal dikirimi. Disimpan di failed_wallets.txt")
-
-def countdown(seconds):
-    for i in range(seconds, 0, -1):
-        sys.stdout.write(f"\r⏳ Menunggu {i} detik...")
-        sys.stdout.flush()
-        time.sleep(1)
-    print()
-
 def display_transaction_logs():
     if not os.path.exists(transaction_log_path):
-        console.print("📭 Belum ada transaksi yang dicatat.", style="yellow")
+        console.print("📬 Belum ada transaksi yang dicatat.", style="yellow")
         return
 
-    table = Table(title="📋 LOG TRANSAKSI TOKEN", box=box.SIMPLE_HEAVY)
+    table = Table(title="📌 LOG TRANSAKSI TOKEN", box=box.SIMPLE_HEAVY)
     table.add_column("Waktu", style="dim", width=20)
     table.add_column("Alamat Tujuan", style="cyan")
     table.add_column("Jumlah", justify="right", style="green")
     table.add_column("Status", style="bold")
     table.add_column("TxHash/Error", overflow="fold")
 
-    sukses = gagal = total_token = 0
+    sukses = gagal = 0
+    total_token = 0.0
 
     with open(transaction_log_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -310,48 +194,96 @@ def display_transaction_logs():
             parts = line.strip().split(",")
             if len(parts) >= 5:
                 waktu, alamat, jumlah, status, detail = parts
-                total_token += int(jumlah)
-                if status == "Sukses":
+                try:
+                    jumlah_float = float(jumlah)
+                    total_token += jumlah_float
+                except ValueError:
+                    jumlah_float = 0
+
+                if status.upper() == "SUCCESS":
                     sukses += 1
-                    explorer_link = f"[link=https://arbiscan.io/tx/{detail}]🔗 {detail[:10]}...[/link]"
-                    table.add_row(waktu, alamat, jumlah, f"[green]{status}[/green]", explorer_link)
+                    explorer_link = f"[link=https://sepolia.tea.xyz/tx/{detail}]🔗 {detail[:10]}...[/link]"
+                    table.add_row(waktu, alamat, f"{jumlah_float:.4f}", f"[green]{status}[/green]", explorer_link)
                 else:
                     gagal += 1
-                    table.add_row(waktu, alamat, jumlah, f"[red]{status}[/red]", detail)
+                    table.add_row(waktu, alamat, f"{jumlah_float:.4f}", f"[red]{status}[/red]", detail)
 
     console.print(table)
-    console.print(f"✅ Total Sukses: [green]{sukses}[/green] | ❌ Gagal: [red]{gagal}[/red] | 📦 Total Token Dikirim: [cyan]{total_token}[/cyan]", style="bold")
+    console.print(f"✅ Total Sukses: [green]{sukses}[/green] | ❌ Gagal: [red]{gagal}[/red] | 📦 Total Token Dikirim: [cyan]{total_token:.4f}[/cyan]", style="bold")
 
 def check_logs():
     logger.info("📜 Menampilkan log transaksi terakhir...")
     display_transaction_logs()
 
+def send_token_threadsafe(to_address, amount):
+    from_address = SENDER_ADDRESS
+    to_address = web3.Web3.to_checksum_address(to_address)
 
-# Entry point
+    try:
+        scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
+
+        tx = token_contract.functions.transfer(to_address, scaled_amount).build_transaction({
+            'from': from_address,
+            'nonce': get_next_nonce(),
+            'gas': 100_000,
+            'gasPrice': w3.to_wei(min(MAX_GAS_PRICE_GWEI, w3.eth.gas_price // 10**9), 'gwei')
+        })
+
+        signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+        if tx_receipt.status == 1:
+            logger.info(f"✅ Token terkirim ke {to_address} | Amount: {amount} | TxHash: {tx_hash.hex()}")
+            log_transaction(to_address, amount, "SUCCESS", tx_hash.hex())
+            with open(SENT_FILE, "a") as f:
+                f.write(f"{to_address}\n")
+        else:
+            raise Exception("Status receipt gagal")
+
+    except Exception as e:
+        logger.error(f"❌ Gagal mengirim ke {to_address}: {e}")
+        log_transaction(to_address, amount, "FAILED", str(e))
+        failed_addresses.append((to_address, amount))
+
+def send_token_batch(wallets):
+    total_sent = 0.0
+    for i in range(0, len(wallets), BATCH_SIZE):
+        batch = wallets[i:i + BATCH_SIZE]
+        logger.info(f"🚀 Memproses batch {i // BATCH_SIZE + 1} ({len(batch)} wallet)...")
+        with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+            futures = [executor.submit(send_token_threadsafe, addr, amt) for addr, amt in batch]
+            for _ in as_completed(futures):
+                pass
+        logger.info(f"📈 Menunggu {IDLE_SECONDS} detik sebelum batch berikutnya...")
+        time.sleep(IDLE_SECONDS)
+
+        if DAILY_LIMIT > 0:
+            total_sent += sum([amt for _, amt in batch])
+            if total_sent >= DAILY_LIMIT:
+                logger.warning(f"🛘 Mencapai batas harian {DAILY_LIMIT}, berhenti sementara.")
+                break
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--run-once", action="store_true", help="Jalankan hanya sekali tanpa jadwal")
-    parser.add_argument("--dashboard", action="store_true", help="Tampilkan dashboard CLI")
-    args = parser.parse_args()
-
+    logger.info("🔄 Inisialisasi nonce awal...")
     initialize_nonce()
-
-    if args.dashboard:
-        show_dashboard()
-        sys.exit()
-
-    if args.run_once:
-        start_time = time.time()
-        process_batch()
-        check_logs()
-        logger.info(f"⏱️ Durasi eksekusi: {time.time() - start_time:.2f} detik")
-    else:
-        logger.info("🕒 Menjalankan dengan penjadwalan setiap 5 menit")
-        schedule.every(5).minutes.do(process_batch)
-        while True:
-            schedule.run_pending()
-            countdown(300)
+    wallets = load_wallets()
+    if not wallets:
+        logger.info("🚫 Tidak ada wallet baru untuk dikirim.")
+        return
+    logger.info(f"💰 Jumlah wallet yang akan diproses: {len(wallets)}")
+    send_token_batch(wallets)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--logs", action="store_true", help="Lihat log transaksi terakhir")
+    args = parser.parse_args()
+
+    if args.logs:
+        check_logs()
+    else:
+        schedule.every().day.at("08:00").do(main)
+        logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB")
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
