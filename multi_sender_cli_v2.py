@@ -196,7 +196,54 @@ def rate_limited_send(to_address, amount_float):
     return send_token(to_address, amount_float)
 
 # ERC20 ABI
-ERC20_ABI = [ ... ]  # Tetap sama seperti sebelumnya
+ERC20_ABI = [
+    {
+        "inputs": [
+            {"internalType": "address", "name": "_to", "type": "address"},
+            {"internalType": "uint256", "name": "_value", "type": "uint256"}
+        ],
+        "name": "transfer",
+        "outputs": [
+            {"internalType": "bool", "name": "", "type": "bool"}
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [
+            {"internalType": "uint8", "name": "", "type": "uint8"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "_owner", "type": "address"}
+        ],
+        "name": "balanceOf",
+        "outputs": [
+            {"internalType": "uint256", "name": "balance", "type": "uint256"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "name",
+        "outputs": [
+            {"internalType": "string", "name": "", "type": "string"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
+# Buat instance kontrak
+token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
+TOKEN_DECIMALS = token_contract.functions.decimals().call()
+
 
 # CLI Dashboard
 
