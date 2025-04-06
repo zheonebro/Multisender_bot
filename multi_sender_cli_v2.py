@@ -16,6 +16,7 @@ import tenacity
 import schedule
 from tqdm import tqdm
 import pytz
+import sys
 
 # Init
 console = Console()
@@ -250,6 +251,13 @@ def reset_daily_log():
 # Jadwal reset harian
 schedule.every().day.at("00:00").do(reset_daily_log)
 
+def countdown(seconds):
+    for i in range(seconds, 0, -1):
+        sys.stdout.write(f"\r⏳ Menunggu {i} detik sebelum pengecekan jadwal berikutnya...")
+        sys.stdout.flush()
+        time.sleep(1)
+    print("\r", end="")
+
 # Entry point
 def main():
     parser = argparse.ArgumentParser()
@@ -263,7 +271,7 @@ def main():
         schedule.every(5).minutes.do(process_batch)
         while True:
             schedule.run_pending()
-            time.sleep(1)
+            countdown(60)  # Hitung mundur 60 detik setiap loop
 
 if __name__ == "__main__":
     main()
