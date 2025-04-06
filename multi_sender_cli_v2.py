@@ -17,7 +17,7 @@ import schedule
 from tqdm import tqdm
 import pytz
 import sys
-from rich.progress import Progress
+from rich.progress import Progress, track
 
 # Init
 console = Console()
@@ -232,7 +232,7 @@ def send_token(to_address, amount_float):
 
     if not has_sufficient_balance(amount):
         logger.warning(f"🚫 Saldo tidak cukup untuk mengirim {amount_float} ke {to_address}")
-        return
+        return False
 
     try:
         with nonce_lock:
@@ -249,24 +249,27 @@ def send_token(to_address, amount_float):
         logger.info(f"✅ Transfer ke {to_address} berhasil! TX: {EXPLORER_URL}tx/{tx_hash.hex()}")
         with open(SENT_FILE, "a") as f:
             f.write(f"{to_address}\n")
+        return True
 
     except Exception as e:
         logger.error(f"⚠️ Gagal kirim ke {to_address}: {e}")
         with nonce_lock:
             if manual_nonce is not None and manual_nonce > 0:
                 manual_nonce -= 1
-        raise
+        return False
 
 # Proses batch
 def process_batch():
     total_sent = 0
+    success_count = 0
+    fail_count = 0
     wallets = load_wallets()
     logger.info(f"🔎 Ditemukan {len(wallets)} wallet baru untuk diproses")
 
     log_balance()
 
     with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = []
+        futures = {}
         for row in wallets:
             to_address = row["address"]
             amount = float(row["amount"])
@@ -275,13 +278,22 @@ def process_batch():
                 logger.warning("⛔ Melebihi batas harian. Pengiriman dihentikan sementara.")
                 break
 
-            futures.append(executor.submit(send_token, to_address, amount))
-            total_sent += amount
+            future = executor.submit(send_token, to_address, amount)
+            futures[future] = amount
             time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
 
         for future in tqdm(as_completed(futures), total=len(futures), desc="⏳ Menyelesaikan transaksi"):
-            pass
+            try:
+                success = future.result()
+                if success:
+                    total_sent += futures[future]
+                    success_count += 1
+                else:
+                    fail_count += 1
+            except Exception:
+                fail_count += 1
 
+    logger.info(f"📊 Ringkasan batch: ✅ {success_count} berhasil, ❌ {fail_count} gagal")
     log_balance()
     logger.info("💤 Menunggu 30 detik sebelum melanjutkan batch berikutnya...")
     time.sleep(30)
@@ -324,12 +336,17 @@ def main():
     initialize_nonce()
 
     if args.run_once:
+        start_time = time.time()
         process_batch()
         check_logs()
+        logger.info(f"⏱️ Durasi eksekusi: {time.time() - start_time:.2f} detik")
     else:
         logger.info("🕒 Menjalankan dengan penjadwalan setiap 5 menit")
         while True:
+            start_time = time.time()
             schedule.run_pending()
+            elapsed = time.time() - start_time
+            logger.info(f"⏱️ Waktu eksekusi batch + log: {elapsed:.2f} detik")
             countdown(300)
 
 if __name__ == "__main__":
