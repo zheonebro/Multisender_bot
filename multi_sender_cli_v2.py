@@ -56,8 +56,13 @@ TOKEN_CONTRACT_RAW = os.getenv("TOKEN_CONTRACT")
 MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "50"))
 EXPLORER_URL = "https://sepolia.tea.xyz/"
 
+if not PRIVATE_KEY:
+    logger.error("❌ Environment variable PRIVATE_KEY tidak ditemukan di .env!")
+if not RAW_SENDER_ADDRESS:
+    logger.error("❌ Environment variable SENDER_ADDRESS tidak ditemukan di .env!")
+if not RPC_URL:
+    logger.error("❌ Environment variable INFURA_URL tidak ditemukan di .env!")
 if not PRIVATE_KEY or not RAW_SENDER_ADDRESS or not RPC_URL:
-    logger.error("❌ PRIVATE_KEY, SENDER_ADDRESS, atau INFURA_URL tidak ditemukan di .env!")
     exit()
 
 SENDER_ADDRESS = web3.Web3.to_checksum_address(RAW_SENDER_ADDRESS)
