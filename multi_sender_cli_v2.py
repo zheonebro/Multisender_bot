@@ -138,8 +138,8 @@ def log_balances():
         token_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** decimals)
         native_balance = w3.eth.get_balance(SENDER_ADDRESS) / (10 ** 18)
 
-        logger.info(f"📦 Token {TOKEN_NAME} balance: {token_balance:.4f}")
-        logger.info(f"⛽ Native token balance (ETH): {native_balance:.4f}")
+        logger.info(f"📦 Token {TOKEN_NAME} balance for {SENDER_ADDRESS}: {token_balance:.4f} {TOKEN_NAME}")
+        logger.info(f"⛽ Native token balance for {SENDER_ADDRESS}: {native_balance:.4f} TEA")
     except Exception as e:
         logger.error(f"❌ Gagal membaca saldo: {e}")
 
