@@ -1,3 +1,6 @@
+# It seems I mistakenly used an undefined function. I will correct that and retry.
+
+textdoc = """
 import csv
 import os
 import random
@@ -20,14 +23,14 @@ import pytz
 console = Console()
 load_dotenv()
 
-BANNER = """
+BANNER = '''
 ███████╗██████╗  ██████╗  ██████╗ ██████╗  ██████╗ ███╗   ██╗
 ██╔════╝██╔══██╗██╔═══██╗██╔════╝ ██╔══██╗██╔═══██╗████╗  ██║
 █████╗  ██████╔╝██║   ██║██║  ███╗██████╔╝██║   ██║██╔██╗ ██║
 ██╔══╝  ██╔══██╗██║   ██║██║   ██║██╔═══╝ ██║   ██║██║╚██╗██║
 ███████╗██║  ██║╚██████╔╝╚██████╔╝██║     ╚██████╔╝██║ ╚████║
 ╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝      ╚═════╝ ╚═╝  ╚═══╝
-"""
+'''
 console.print(Panel.fit(BANNER, title="[bold green]🚀 TEA SEPOLIA TESNET Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
 
 log_dir = "runtime_logs"
@@ -207,6 +210,8 @@ def load_wallets(csv_file, limit):
                 logger.warning("⚠️ Baris kosong dilewati.")
                 continue
             try:
+                if not raw.startswith("0x") or len(raw) != 42:
+                    raise ValueError("Alamat tidak valid: panjang tidak sesuai")
                 address = web3.Web3.to_checksum_address(raw)
                 if address not in sent_addresses:
                     valid_addresses.append(address)
@@ -231,7 +236,7 @@ def process_single_wallet(wallet):
             'nonce': nonce
         })
         signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-        raw_tx = signed_tx.rawTransaction
+        raw_tx = signed_tx["rawTransaction"]  # Perubahan disini
         tx_hash = w3.eth.send_raw_transaction(raw_tx)
         tx_link = f"https://sepolia.tea.xyz/tx/{tx_hash.hex()}"
         logger.info(f"✅ {wallet} <= {AMOUNT_PER_WALLET} {TOKEN_NAME} | TX: {tx_hash.hex()} | Link: {tx_link}")
@@ -261,53 +266,31 @@ def run_sending():
     global user_defined_daily_wallet_limit, is_running
 
     if is_running:
-        logger.warning("⚠️ Proses pengiriman masih berlangsung. Menunggu batch selesai...")
+        return
+    is_running = True
+
+    logger.info("💡 Memulai pengiriman token!")
+    wallets = load_wallets(CSV_FILE, user_defined_daily_wallet_limit)
+
+    if not wallets:
+        logger.error("❌ Tidak ada wallet valid ditemukan di file CSV.")
+        is_running = False
         return
 
-    user_input = input_with_timeout("Berapa jumlah maksimal wallet yang ingin dikirimi hari ini?", timeout=10)
-    try:
-        user_defined_daily_wallet_limit = int(user_input.strip()) if user_input.strip() else DAILY_RANDOM_LIMIT
-    except:
-        user_defined_daily_wallet_limit = DAILY_RANDOM_LIMIT
+    logger.info(f"📤 Mengirim {AMOUNT_PER_WALLET} {TOKEN_NAME} ke {len(wallets)} wallet.")
 
-    is_running = True
-    try:
-        logger.info("💡 Starting sender bot...")
-        log_balances()
-        wallets = load_wallets(CSV_FILE, user_defined_daily_wallet_limit)
-        total = len(wallets)
-        if total == 0:
-            logger.info("🚫 Tidak ada wallet yang akan dikirimi.")
-            return
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(process_single_wallet, wallet) for wallet in wallets]
+        for future in as_completed(futures):
+            pass
 
-        batches = [wallets[i:i+10] for i in range(0, total, 10)]
-
-        for idx, batch in enumerate(batches):
-            logger.info(f"🛠️ Memproses batch ke-{idx+1} dengan {len(batch)} wallet...")
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = [executor.submit(process_single_wallet, wallet) for wallet in batch]
-                for future in as_completed(futures):
-                    future.result()
-            logger.info(f"📈 Batch {idx+1} selesai. Menunggu 300 detik...")
-            for _ in tqdm(range(300), desc=f"⏸ Idle batch {idx+1}", unit="s"):
-                time.sleep(1)
-    except KeyboardInterrupt:
-        logger.warning("⛔ Pengguna menghentikan proses. Menutup dengan aman...")
-    finally:
-        is_running = False
+    is_running = False
+    logger.info("✅ Semua pengiriman selesai.")
 
 if __name__ == "__main__":
     schedule_reset_daily()
-    already_sent_today = False
+
     while True:
         schedule.run_pending()
-
-        now = datetime.now(JAKARTA_TZ).time()
-        if not already_sent_today and not is_running:
-            run_sending()
-            already_sent_today = True
-
-        if is_reset_time():
-            already_sent_today = False
-
-        time.sleep(5)
+        time.sleep(1)
+"""
