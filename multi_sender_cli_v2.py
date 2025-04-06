@@ -2,7 +2,7 @@ import csv
 import os
 import random
 import time
-from datetime import datetime
+from datetime import datetime, time as dt_time
 import threading
 import logging
 import argparse
@@ -15,6 +15,7 @@ import web3
 import tenacity
 import schedule
 from tqdm import tqdm
+import pytz
 
 # Init
 console = Console()
@@ -66,8 +67,6 @@ try:
     DAILY_LIMIT = float(DAILY_LIMIT_RAW)
 except ValueError:
     DAILY_LIMIT = 0
-
-daily_sent_total = 0
 
 MIN_DELAY_SECONDS = float(os.getenv("MIN_DELAY_SECONDS", "0.5"))
 MAX_DELAY_SECONDS = float(os.getenv("MAX_DELAY_SECONDS", "2"))
@@ -131,6 +130,21 @@ nonce_lock = threading.Lock()
 global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
 wallets_all = []
 
+MAX_ADDRESS_PER_DAY = 150
+daily_address_sent = 0
+
+JAKARTA_TZ = pytz.timezone("Asia/Jakarta")
+
+def is_reset_time():
+    now = datetime.now(JAKARTA_TZ)
+    return now.time() >= dt_time(0, 0) and now.time() < dt_time(0, 1)
+
+def schedule_reset_daily():
+    def check_and_reset():
+        if is_reset_time():
+            reset_sent_wallets()
+    schedule.every().minute.do(check_and_reset)
+
 # Load wallet
 
 def load_sent_wallets():
@@ -140,8 +154,10 @@ def load_sent_wallets():
         return set(line.strip() for line in f if line.strip())
 
 def save_sent_wallet(address):
+    global daily_address_sent
     with open(SENT_FILE, 'a') as f:
         f.write(f"{address}\n")
+    daily_address_sent += 1
 
 def load_wallets(csv_file):
     sent_addresses = load_sent_wallets()
@@ -166,15 +182,17 @@ wallets_all = load_wallets(CSV_FILE)
 # 🔁 Reset otomatis sent_wallets.txt setiap hari
 
 def reset_sent_wallets():
-    global daily_sent_total
+    global daily_sent_total, daily_address_sent
     try:
         open(SENT_FILE, 'w').close()
         daily_sent_total = 0
+        daily_address_sent = 0
         logger.info("🗑️ File sent_wallets.txt telah direset (dikosongkan).")
     except Exception as e:
         logger.error(f"❌ Gagal mereset sent_wallets.txt: {e}")
 
 # Monitoring balance
+
 def log_balances():
     try:
         token_balance_raw = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
@@ -216,12 +234,16 @@ MIN_TOKEN = 5
 MAX_TOKEN = 50
 
 def process_batch(addresses_batch, batch_id):
-    global global_nonce, daily_sent_total
+    global global_nonce, daily_sent_total, daily_address_sent
     for i, to_address in enumerate(tqdm(addresses_batch, desc=f"BATCH {batch_id}")):
         try:
             token_amount = random.randint(MIN_TOKEN, MAX_TOKEN)
             if DAILY_LIMIT > 0 and (daily_sent_total + token_amount) > DAILY_LIMIT:
-                logger.warning(f"[BATCH {batch_id}] ⚠️ Batas harian tercapai, menghentikan pengiriman.")
+                logger.warning(f"[BATCH {batch_id}] ⚠️ Batas token harian tercapai, menghentikan pengiriman.")
+                return
+
+            if daily_address_sent >= MAX_ADDRESS_PER_DAY:
+                logger.warning(f"[BATCH {batch_id}] ⚠️ Jumlah address harian ({MAX_ADDRESS_PER_DAY}) tercapai. Menghentikan pengiriman.")
                 return
 
             amount = token_amount * (10 ** decimals)
@@ -288,7 +310,7 @@ def interactive_menu():
         if pilihan == "1":
             logger.info("[AUTO MODE - MANUAL] Bot akan terus mengirim batch secara otomatis.")
             schedule.every(IDLE_AFTER_BATCH_SECONDS).seconds.do(run_sending)
-            schedule.every().day.at("00:00").do(reset_sent_wallets)
+            schedule_reset_daily()
             run_sending()
             while True:
                 schedule.run_pending()
@@ -313,10 +335,7 @@ if __name__ == "__main__":
     if args.auto:
         logger.info("[AUTO MODE] Bot akan terus mengirim batch secara otomatis.")
         schedule.every(IDLE_AFTER_BATCH_SECONDS).seconds.do(run_sending)
-
-        # 🔁 Tambahkan jadwal reset harian
-        schedule.every().day.at("00:00").do(reset_sent_wallets)
-
+        schedule_reset_daily()
         run_sending()
         while True:
             schedule.run_pending()
