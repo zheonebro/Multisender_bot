@@ -243,8 +243,42 @@ def countdown(seconds):
         time.sleep(1)
     print()
 
+def display_transaction_logs():
+    if not os.path.exists(transaction_log_path):
+        console.print("📭 Belum ada transaksi yang dicatat.", style="yellow")
+        return
+
+    table = Table(title="📋 LOG TRANSAKSI TOKEN", box=box.SIMPLE_HEAVY)
+    table.add_column("Waktu", style="dim", width=20)
+    table.add_column("Alamat Tujuan", style="cyan")
+    table.add_column("Jumlah", justify="right", style="green")
+    table.add_column("Status", style="bold")
+    table.add_column("TxHash/Error", overflow="fold")
+
+    sukses = gagal = total_token = 0
+
+    with open(transaction_log_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+        for line in lines[-15:]:  # tampilkan 15 transaksi terakhir
+            parts = line.strip().split(",")
+            if len(parts) >= 5:
+                waktu, alamat, jumlah, status, detail = parts
+                total_token += int(jumlah)
+                if status == "Sukses":
+                    sukses += 1
+                    explorer_link = f"[link=https://arbiscan.io/tx/{detail}]🔗 {detail[:10]}...[/link]"
+                    table.add_row(waktu, alamat, jumlah, f"[green]{status}[/green]", explorer_link)
+                else:
+                    gagal += 1
+                    table.add_row(waktu, alamat, jumlah, f"[red]{status}[/red]", detail)
+
+    console.print(table)
+    console.print(f"✅ Total Sukses: [green]{sukses}[/green] | ❌ Gagal: [red]{gagal}[/red] | 📦 Total Token Dikirim: [cyan]{total_token}[/cyan]", style="bold")
+
 def check_logs():
-    logger.info("📜 Log terakhir dipantau.")
+    logger.info("📜 Menampilkan log transaksi terakhir...")
+    display_transaction_logs()
+
 
 # Entry point
 
