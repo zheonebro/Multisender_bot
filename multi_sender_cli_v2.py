@@ -36,7 +36,7 @@ log_path = os.path.join(log_dir, "runtime.log")
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(message)s",
+    format="%(asctime)s | %(levelname)s | %(message)s",
     datefmt="[%Y-%m-%d %H:%M:%S]",
     handlers=[
         logging.StreamHandler(),
@@ -64,6 +64,12 @@ try:
 except ValueError:
     logger.error("❌ MAX_GAS_PRICE_GWEI harus berupa angka.")
     exit()
+
+try:
+    AMOUNT_PER_WALLET = float(os.getenv("AMOUNT_PER_WALLET", "1"))
+except ValueError:
+    logger.error("❌ AMOUNT_PER_WALLET harus berupa angka.")
+    AMOUNT_PER_WALLET = 1
 
 SENDER_ADDRESS = web3.Web3.to_checksum_address(RAW_SENDER_ADDRESS)
 
@@ -138,8 +144,8 @@ def log_balances():
         token_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** decimals)
         native_balance = w3.eth.get_balance(SENDER_ADDRESS) / (10 ** 18)
 
-        logger.info(f"📦 Token {TOKEN_NAME} balance for {SENDER_ADDRESS}: {token_balance:.4f} {TOKEN_NAME}")
-        logger.info(f"⛽ Native token balance for {SENDER_ADDRESS}: {native_balance:.4f} TEA")
+        logger.info(f"📦 Token {TOKEN_NAME} balance: {token_balance:.4f} {TOKEN_NAME} | Address: {SENDER_ADDRESS}")
+        logger.info(f"⛽ Native token balance: {native_balance:.4f} TEA | Address: {SENDER_ADDRESS}")
     except Exception as e:
         logger.error(f"❌ Gagal membaca saldo: {e}")
 
@@ -155,6 +161,7 @@ JAKARTA_TZ = pytz.timezone("Asia/Jakarta")
 user_defined_daily_wallet_limit = DAILY_RANDOM_LIMIT
 is_running = False
 has_reset_today = False
+
 
 def is_reset_time():
     now = datetime.now(JAKARTA_TZ)
@@ -216,7 +223,7 @@ def process_single_wallet(wallet):
     try:
         with nonce_lock:
             nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
-        value_to_send = int(1 * (10 ** decimals))
+        value_to_send = int(AMOUNT_PER_WALLET * (10 ** decimals))
         tx = token_contract.functions.transfer(wallet, value_to_send).build_transaction({
             'from': SENDER_ADDRESS,
             'gas': 100000,
@@ -224,9 +231,10 @@ def process_single_wallet(wallet):
             'nonce': nonce
         })
         signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        raw_tx = signed_tx.rawTransaction
+        tx_hash = w3.eth.send_raw_transaction(raw_tx)
         tx_link = f"https://sepolia.tea.xyz/tx/{tx_hash.hex()}"
-        logger.info(f"✅ Token {TOKEN_NAME} dikirim ke: {wallet} | Jumlah: 1 {TOKEN_NAME} | TX: {tx_link}")
+        logger.info(f"✅ {wallet} <= {AMOUNT_PER_WALLET} {TOKEN_NAME} | TX: {tx_hash.hex()} | Link: {tx_link}")
         save_sent_wallet(wallet)
     except Exception as e:
         logger.error(f"❌ Gagal mengirim ke {wallet}: {e}")
@@ -290,7 +298,16 @@ def run_sending():
 
 if __name__ == "__main__":
     schedule_reset_daily()
+    already_sent_today = False
     while True:
         schedule.run_pending()
-        run_sending()
+
+        now = datetime.now(JAKARTA_TZ).time()
+        if not already_sent_today and not is_running:
+            run_sending()
+            already_sent_today = True
+
+        if is_reset_time():
+            already_sent_today = False
+
         time.sleep(5)
