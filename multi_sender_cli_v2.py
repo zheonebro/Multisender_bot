@@ -175,16 +175,28 @@ def log_balance():
     balance_token = balance / (10 ** TOKEN_DECIMALS)
     logger.info(f"💰 Sisa saldo token: {balance_token:.4f}")
 
-# Dapatkan nonce terkini
-time.sleep(1)
+# Inisialisasi nonce
+manual_nonce = None
 nonce_lock = threading.Lock()
+
+def initialize_nonce():
+    global manual_nonce
+    try:
+        manual_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, 'pending')
+        logger.info(f"🚀 Initial nonce dari 'pending': {manual_nonce}")
+    except Exception as e:
+        logger.warning(f"⚠️ Gagal dapat nonce 'pending', fallback ke 'latest'. Error: {e}")
+        manual_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, 'latest')
+        logger.info(f"🪄 Initial nonce dari 'latest': {manual_nonce}")
+
 def get_nonce():
+    global manual_nonce
     with nonce_lock:
-        try:
-            return w3.eth.get_transaction_count(SENDER_ADDRESS, 'pending')
-        except Exception as e:
-            logger.warning(f"⚠️ Gagal mendapatkan nonce dari 'pending'. Gunakan 'latest'. Error: {e}")
-            return w3.eth.get_transaction_count(SENDER_ADDRESS, 'latest')
+        if manual_nonce is None:
+            manual_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, 'pending')
+        nonce = manual_nonce
+        manual_nonce += 1
+        return nonce
 
 # Kirim token dengan retry otomatis
 @tenacity.retry(
@@ -194,6 +206,7 @@ def get_nonce():
     reraise=True
 )
 def send_token(to_address, amount_float):
+    global manual_nonce
     to_address = web3.Web3.to_checksum_address(to_address)
     amount = int(amount_float * (10 ** TOKEN_DECIMALS))
 
@@ -202,23 +215,26 @@ def send_token(to_address, amount_float):
         return
 
     try:
-        nonce = get_nonce()
-        tx = token_contract.functions.transfer(to_address, amount).build_transaction({
-            'from': SENDER_ADDRESS,
-            'nonce': nonce,
-            'gas': 100_000,
-            'gasPrice': w3.to_wei(MAX_GAS_PRICE_GWEI, 'gwei')
-        })
+        with nonce_lock:
+            nonce = get_nonce()
+            tx = token_contract.functions.transfer(to_address, amount).build_transaction({
+                'from': SENDER_ADDRESS,
+                'nonce': nonce,
+                'gas': 100_000,
+                'gasPrice': w3.to_wei(MAX_GAS_PRICE_GWEI, 'gwei')
+            })
+            signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
 
-        signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
         logger.info(f"✅ Transfer ke {to_address} berhasil! TX: {EXPLORER_URL}tx/{tx_hash.hex()}")
-
         with open(SENT_FILE, "a") as f:
             f.write(f"{to_address}\n")
 
     except Exception as e:
         logger.error(f"⚠️ Gagal kirim ke {to_address}: {e}")
+        with nonce_lock:
+            if manual_nonce is not None:
+                manual_nonce -= 1
         raise
 
 # Proses batch
@@ -254,8 +270,21 @@ def reset_daily_log():
         f.write("")
     logger.info("🔄 Daftar wallet terkirim telah di-reset.")
 
-# Jadwal reset harian
+# Cek isi log
+def check_logs():
+    logger.info("📄 Mengecek isi log terbaru:")
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()[-10:]
+            for line in lines:
+                logger.info(line.strip())
+    except Exception as e:
+        logger.error(f"⚠️ Gagal membaca log: {e}")
+
+# Jadwal
 schedule.every().day.at("00:00").do(reset_daily_log)
+schedule.every(5).minutes.do(process_batch)
+schedule.every(5).minutes.do(check_logs)
 
 def countdown(seconds):
     with Progress(transient=True) as progress:
@@ -270,14 +299,16 @@ def main():
     parser.add_argument("--run-once", action="store_true", help="Jalankan hanya sekali tanpa jadwal")
     args = parser.parse_args()
 
+    initialize_nonce()
+
     if args.run_once:
         process_batch()
+        check_logs()
     else:
         logger.info("🕒 Menjalankan dengan penjadwalan setiap 5 menit")
-        schedule.every(5).minutes.do(process_batch)
         while True:
             schedule.run_pending()
-            countdown(60)
+            countdown(300)
 
 if __name__ == "__main__":
     main()
