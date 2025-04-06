@@ -162,7 +162,15 @@ if os.path.exists(SENT_FILE):
 def load_wallets():
     with open(CSV_FILE, newline='') as csvfile:
         reader = csv.DictReader(csvfile)
-        return [row for row in reader if row["address"] not in sent_wallets]
+        wallets = []
+        for row in reader:
+            if row["address"] not in sent_wallets:
+                try:
+                    amount = float(row["amount"])
+                except (KeyError, ValueError):
+                    amount = round(random.uniform(5, 10), 4)  # default antara 5 dan 10
+                wallets.append({"address": row["address"], "amount": amount})
+        return wallets
 
 # Cek saldo cukup
 def has_sufficient_balance(amount_int):
@@ -179,23 +187,35 @@ def log_balance():
 manual_nonce = None
 nonce_lock = threading.Lock()
 
+@tenacity.retry(
+    wait=tenacity.wait_fixed(5),
+    stop=tenacity.stop_after_attempt(3),
+    retry=tenacity.retry_if_exception_type(Exception)
+)
+def safe_get_transaction_count(address, tag):
+    return w3.eth.get_transaction_count(address, tag)
+
 def initialize_nonce():
     global manual_nonce
     try:
-        manual_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, 'pending')
+        manual_nonce = safe_get_transaction_count(SENDER_ADDRESS, 'pending')
         logger.info(f"🚀 Initial nonce dari 'pending': {manual_nonce}")
     except Exception as e:
         logger.warning(f"⚠️ Gagal dapat nonce 'pending', fallback ke 'latest'. Error: {e}")
-        manual_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, 'latest')
+        manual_nonce = safe_get_transaction_count(SENDER_ADDRESS, 'latest')
         logger.info(f"🪄 Initial nonce dari 'latest': {manual_nonce}")
 
 def get_nonce():
     global manual_nonce
     with nonce_lock:
         if manual_nonce is None:
-            manual_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, 'pending')
+            manual_nonce = safe_get_transaction_count(SENDER_ADDRESS, 'pending')
         nonce = manual_nonce
-        manual_nonce += 1
+        latest_nonce = safe_get_transaction_count(SENDER_ADDRESS, 'pending')
+        if nonce < latest_nonce:
+            logger.warning(f"🔄 Menyesuaikan nonce dari {nonce} ke {latest_nonce}")
+            nonce = latest_nonce
+        manual_nonce = nonce + 1
         return nonce
 
 # Kirim token dengan retry otomatis
@@ -233,7 +253,7 @@ def send_token(to_address, amount_float):
     except Exception as e:
         logger.error(f"⚠️ Gagal kirim ke {to_address}: {e}")
         with nonce_lock:
-            if manual_nonce is not None:
+            if manual_nonce is not None and manual_nonce > 0:
                 manual_nonce -= 1
         raise
 
@@ -263,6 +283,8 @@ def process_batch():
             pass
 
     log_balance()
+    logger.info("💤 Menunggu 30 detik sebelum melanjutkan batch berikutnya...")
+    time.sleep(30)
 
 # Reset harian
 def reset_daily_log():
