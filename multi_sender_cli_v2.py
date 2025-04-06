@@ -195,24 +195,41 @@ def load_wallets(csv_file, limit):
     with open(csv_file, newline='') as f:
         reader = csv.DictReader(f)
         for row in reader:
+            raw = row.get('address', '').strip()
+            if not raw:
+                logger.warning("⚠️ Baris kosong dilewati.")
+                continue
             try:
-                address = web3.Web3.to_checksum_address(row['address'].strip())
+                address = web3.Web3.to_checksum_address(raw)
                 if address not in sent_addresses:
                     valid_addresses.append(address)
-            except:
-                continue
+            except Exception as e:
+                logger.warning(f"⚠️ Alamat tidak valid dilewati: {raw} ({e})")
 
     if len(valid_addresses) > limit:
         valid_addresses = random.sample(valid_addresses, limit)
 
     return valid_addresses
 
-def process_batch(batch, batch_number):
-    logger.info(f"🛠️ Memproses batch ke-{batch_number} dengan {len(batch)} wallet...")
-    for wallet in batch:
-        time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
-        logger.info(f"✅ Token dikirim ke: {wallet}")
+def process_single_wallet(wallet):
+    time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
+    try:
+        with nonce_lock:
+            nonce = w3.eth.get_transaction_count(SENDER_ADDRESS)
+        value_to_send = int(1 * (10 ** decimals))
+        tx = token_contract.functions.transfer(wallet, value_to_send).build_transaction({
+            'from': SENDER_ADDRESS,
+            'gas': 100000,
+            'gasPrice': w3.to_wei(MAX_GAS_PRICE_GWEI, 'gwei'),
+            'nonce': nonce
+        })
+        signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        tx_link = f"https://sepolia.tea.xyz/tx/{tx_hash.hex()}"
+        logger.info(f"✅ Token {TOKEN_NAME} dikirim ke: {wallet} | Jumlah: 1 {TOKEN_NAME} | TX: {tx_link}")
         save_sent_wallet(wallet)
+    except Exception as e:
+        logger.error(f"❌ Gagal mengirim ke {wallet}: {e}")
 
 def input_with_timeout(prompt, timeout=10):
     result = [None]
@@ -258,13 +275,13 @@ def run_sending():
         batches = [wallets[i:i+10] for i in range(0, total, 10)]
 
         for idx, batch in enumerate(batches):
+            logger.info(f"🛠️ Memproses batch ke-{idx+1} dengan {len(batch)} wallet...")
             with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = [executor.submit(process_batch, batch, idx+1)]
+                futures = [executor.submit(process_single_wallet, wallet) for wallet in batch]
                 for future in as_completed(futures):
                     future.result()
             logger.info(f"📈 Batch {idx+1} selesai. Menunggu 300 detik...")
-            for remaining in range(300, 0, -1):
-                logger.info(f"⏸ Idle... {remaining} detik tersisa")
+            for _ in tqdm(range(300), desc=f"⏸ Idle batch {idx+1}", unit="s"):
                 time.sleep(1)
     except KeyboardInterrupt:
         logger.warning("⛔ Pengguna menghentikan proses. Menutup dengan aman...")
