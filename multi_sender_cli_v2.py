@@ -17,11 +17,9 @@ import schedule
 from tqdm import tqdm
 import pytz
 
-# Init
 console = Console()
 load_dotenv()
 
-# Banner
 BANNER = """
 ███████╗██████╗  ██████╗  ██████╗ ██████╗  ██████╗ ███╗   ██╗
 ██╔════╝██╔══██╗██╔═══██╗██╔════╝ ██╔══██╗██╔═══██╗████╗  ██║
@@ -32,7 +30,6 @@ BANNER = """
 """
 console.print(Panel.fit(BANNER, title="[bold green]🚀 TEA SEPOLIA TESNET Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
 
-# Setup logging
 log_dir = "runtime_logs"
 os.makedirs(log_dir, exist_ok=True)
 log_path = os.path.join(log_dir, "runtime.log")
@@ -48,13 +45,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bot")
 
-# Config
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 RAW_SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_RAW = os.getenv("TOKEN_CONTRACT")
-MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "50"))
-EXPLORER_URL = "https://sepolia.tea.xyz/"
 
 if not PRIVATE_KEY:
     logger.error("❌ Environment variable PRIVATE_KEY tidak ditemukan di .env!")
@@ -65,16 +59,27 @@ if not RPC_URL:
 if not PRIVATE_KEY or not RAW_SENDER_ADDRESS or not RPC_URL:
     exit()
 
+try:
+    MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "50"))
+except ValueError:
+    logger.error("❌ MAX_GAS_PRICE_GWEI harus berupa angka.")
+    exit()
+
 SENDER_ADDRESS = web3.Web3.to_checksum_address(RAW_SENDER_ADDRESS)
 
 DAILY_LIMIT_RAW = os.getenv("DAILY_LIMIT", "0")
 try:
     DAILY_LIMIT = float(DAILY_LIMIT_RAW)
 except ValueError:
+    logger.error(f"❌ DAILY_LIMIT salah format: {DAILY_LIMIT_RAW}")
     DAILY_LIMIT = 0
 
-MIN_DELAY_SECONDS = float(os.getenv("MIN_DELAY_SECONDS", "0.5"))
-MAX_DELAY_SECONDS = float(os.getenv("MAX_DELAY_SECONDS", "2"))
+try:
+    MIN_DELAY_SECONDS = float(os.getenv("MIN_DELAY_SECONDS", "0.5"))
+    MAX_DELAY_SECONDS = float(os.getenv("MAX_DELAY_SECONDS", "2"))
+except ValueError:
+    logger.error("❌ MIN_DELAY_SECONDS dan MAX_DELAY_SECONDS harus berupa angka.")
+    exit()
 
 if not TOKEN_CONTRACT_RAW:
     logger.error("❌ Environment variable 'TOKEN_CONTRACT' tidak ditemukan atau kosong!")
@@ -85,13 +90,11 @@ TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(TOKEN_CONTRACT_RAW)
 CSV_FILE = "wallets.csv"
 SENT_FILE = "sent_wallets.txt"
 
-# Connect Web3
 w3 = web3.Web3(web3.Web3.HTTPProvider(RPC_URL))
 if not w3.is_connected():
     logger.error("❌ Gagal terhubung ke jaringan! Cek RPC URL")
     exit()
 
-# ERC20 ABI
 ERC20_ABI = [
     {
         "inputs": [
@@ -126,7 +129,6 @@ ERC20_ABI = [
     }
 ]
 
-# Contract
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=ERC20_ABI)
 decimals = token_contract.functions.decimals().call()
 TOKEN_NAME = token_contract.functions.name().call()
@@ -154,7 +156,6 @@ user_defined_daily_wallet_limit = DAILY_RANDOM_LIMIT
 is_running = False
 has_reset_today = False
 
-# Time checker
 def is_reset_time():
     now = datetime.now(JAKARTA_TZ)
     return now.time() >= dt_time(0, 0) and now.time() < dt_time(0, 1)
@@ -174,7 +175,6 @@ def schedule_reset_daily():
             has_reset_today = False
     schedule.every().minute.do(check_and_reset)
 
-# Load wallet
 def load_sent_wallets():
     if not os.path.exists(SENT_FILE):
         return set()
@@ -207,8 +207,6 @@ def load_wallets(csv_file, limit):
 
     return valid_addresses
 
-# Dummy batch processor
-
 def process_batch(batch, batch_number):
     logger.info(f"🛠️ Memproses batch ke-{batch_number} dengan {len(batch)} wallet...")
     for wallet in batch:
@@ -216,7 +214,6 @@ def process_batch(batch, batch_number):
         logger.info(f"✅ Token dikirim ke: {wallet}")
         save_sent_wallet(wallet)
 
-# Interaktif menu
 def input_with_timeout(prompt, timeout=10):
     result = [None]
 
@@ -235,7 +232,6 @@ def input_with_timeout(prompt, timeout=10):
         return ""
     return result[0]
 
-# Main runner
 def run_sending():
     global user_defined_daily_wallet_limit, is_running
 
@@ -263,7 +259,9 @@ def run_sending():
 
         for idx, batch in enumerate(batches):
             with ThreadPoolExecutor(max_workers=5) as executor:
-                executor.submit(process_batch, batch, idx+1)
+                futures = [executor.submit(process_batch, batch, idx+1)]
+                for future in as_completed(futures):
+                    future.result()
             logger.info(f"📈 Batch {idx+1} selesai. Menunggu 300 detik...")
             for remaining in range(300, 0, -1):
                 logger.info(f"⏸ Idle... {remaining} detik tersisa")
