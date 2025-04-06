@@ -17,6 +17,7 @@ import schedule
 from tqdm import tqdm
 import pytz
 import sys
+from rich.progress import Progress
 
 # Init
 console = Console()
@@ -175,10 +176,15 @@ def log_balance():
     logger.info(f"💰 Sisa saldo token: {balance_token:.4f}")
 
 # Dapatkan nonce terkini
+time.sleep(1)
 nonce_lock = threading.Lock()
 def get_nonce():
     with nonce_lock:
-        return w3.eth.get_transaction_count(SENDER_ADDRESS, 'pending')
+        try:
+            return w3.eth.get_transaction_count(SENDER_ADDRESS, 'pending')
+        except Exception as e:
+            logger.warning(f"⚠️ Gagal mendapatkan nonce dari 'pending'. Gunakan 'latest'. Error: {e}")
+            return w3.eth.get_transaction_count(SENDER_ADDRESS, 'latest')
 
 # Kirim token dengan retry otomatis
 @tenacity.retry(
@@ -252,11 +258,11 @@ def reset_daily_log():
 schedule.every().day.at("00:00").do(reset_daily_log)
 
 def countdown(seconds):
-    for i in range(seconds, 0, -1):
-        sys.stdout.write(f"\r⏳ Menunggu {i} detik sebelum pengecekan jadwal berikutnya...")
-        sys.stdout.flush()
-        time.sleep(1)
-    print("\r", end="")
+    with Progress(transient=True) as progress:
+        task = progress.add_task("[yellow]⏳ Menunggu jadwal berikutnya...", total=seconds)
+        for _ in range(seconds):
+            time.sleep(1)
+            progress.update(task, advance=1)
 
 # Entry point
 def main():
@@ -271,7 +277,7 @@ def main():
         schedule.every(5).minutes.do(process_batch)
         while True:
             schedule.run_pending()
-            countdown(60)  # Hitung mundur 60 detik setiap loop
+            countdown(60)
 
 if __name__ == "__main__":
     main()
