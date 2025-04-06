@@ -236,5 +236,9 @@ def input_with_timeout(prompt, timeout=10):
     finally:
         signal.alarm(0)
 
+if __name__ == "__main__":
+    run_sending()
+
+
 # interactive_menu tidak berubah dari versi sebelumnya
 # CLI tidak berubah dari versi sebelumnya
