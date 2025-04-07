@@ -190,7 +190,7 @@ def display_transaction_logs():
 
     with open(transaction_log_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
-        for line in lines[-15:]:  # tampilkan 15 transaksi terakhir
+        for line in lines[-15:]:
             parts = line.strip().split(",")
             if len(parts) >= 5:
                 waktu, alamat, jumlah, status, detail = parts
@@ -215,34 +215,42 @@ def check_logs():
     logger.info("📜 Menampilkan log transaksi terakhir...")
     display_transaction_logs()
 
-def send_token_threadsafe(to_address, amount):
+@tenacity.retry(
+    stop=tenacity.stop_after_attempt(3),
+    wait=tenacity.wait_exponential(multiplier=2, min=2, max=10),
+    retry=tenacity.retry_if_exception_type(Exception),
+    reraise=True
+)
+def _send_token_with_retry(to_address, amount):
     from_address = SENDER_ADDRESS
     to_address = web3.Web3.to_checksum_address(to_address)
+    scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
+    tx = token_contract.functions.transfer(to_address, scaled_amount).build_transaction({
+        'from': from_address,
+        'nonce': get_next_nonce(),
+        'gas': 100_000,
+        'gasPrice': w3.to_wei(min(MAX_GAS_PRICE_GWEI, w3.eth.gas_price // 10**9), 'gwei')
+    })
+
+    signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+    tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+    if tx_receipt.status != 1:
+        raise Exception("Status receipt gagal")
+
+    return tx_hash.hex()
+
+def send_token_threadsafe(to_address, amount):
     try:
-        scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
-
-        tx = token_contract.functions.transfer(to_address, scaled_amount).build_transaction({
-            'from': from_address,
-            'nonce': get_next_nonce(),
-            'gas': 100_000,
-            'gasPrice': w3.to_wei(min(MAX_GAS_PRICE_GWEI, w3.eth.gas_price // 10**9), 'gwei')
-        })
-
-        signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-
-        if tx_receipt.status == 1:
-            logger.info(f"✅ Token terkirim ke {to_address} | Amount: {amount} | TxHash: {tx_hash.hex()}")
-            log_transaction(to_address, amount, "SUCCESS", tx_hash.hex())
-            with open(SENT_FILE, "a") as f:
-                f.write(f"{to_address}\n")
-        else:
-            raise Exception("Status receipt gagal")
-
+        tx_hash = _send_token_with_retry(to_address, amount)
+        logger.info(f"✅ Token terkirim ke {to_address} | Amount: {amount} | TxHash: {tx_hash}")
+        log_transaction(to_address, amount, "SUCCESS", tx_hash)
+        with open(SENT_FILE, "a") as f:
+            f.write(f"{to_address}\n")
     except Exception as e:
-        logger.error(f"❌ Gagal mengirim ke {to_address}: {e}")
+        logger.error(f"❌ Gagal mengirim ke {to_address} setelah retry: {e}")
         log_transaction(to_address, amount, "FAILED", str(e))
         failed_addresses.append((to_address, amount))
 
@@ -261,7 +269,7 @@ def send_token_batch(wallets):
         if DAILY_LIMIT > 0:
             total_sent += sum([amt for _, amt in batch])
             if total_sent >= DAILY_LIMIT:
-                logger.warning(f"🛘 Mencapai batas harian {DAILY_LIMIT}, berhenti sementara.")
+                logger.warning(f"🚘 Mencapai batas harian {DAILY_LIMIT}, berhenti sementara.")
                 break
 
 def main():
@@ -286,4 +294,5 @@ if __name__ == "__main__":
         logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB")
         while True:
             schedule.run_pending()
-            time.sleep(1)
+            logger.info("⏳ Menunggu jadwal berikutnya...")
+            time.sleep(60)
