@@ -259,10 +259,12 @@ def send_token_batch(wallets):
     for i in range(0, len(wallets), BATCH_SIZE):
         batch = wallets[i:i + BATCH_SIZE]
         logger.info(f"🚀 Memproses batch {i // BATCH_SIZE + 1} ({len(batch)} wallet)...")
-        with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-            futures = [executor.submit(send_token_threadsafe, addr, amt) for addr, amt in batch]
-            for _ in as_completed(futures):
-                pass
+        with Progress() as progress:
+            task = progress.add_task("Mengirim token...", total=len(batch))
+            with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+                futures = [executor.submit(send_token_threadsafe, addr, amt) for addr, amt in batch]
+                for _ in as_completed(futures):
+                    progress.advance(task)
         logger.info(f"📈 Menunggu {IDLE_SECONDS} detik sebelum batch berikutnya...")
         time.sleep(IDLE_SECONDS)
 
@@ -273,6 +275,7 @@ def send_token_batch(wallets):
                 break
 
 def main():
+    logger.info("🟢 Fungsi `main()` dijalankan dari scheduler.")
     logger.info("🔄 Inisialisasi nonce awal...")
     initialize_nonce()
     wallets = load_wallets()
@@ -294,5 +297,5 @@ if __name__ == "__main__":
         logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB")
         while True:
             schedule.run_pending()
-            logger.info("⏳ Menunggu jadwal berikutnya...")
+            logger.info("💤 Bot aktif. Menunggu jadwal pengiriman selanjutnya...")
             time.sleep(60)
