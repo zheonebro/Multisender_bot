@@ -183,7 +183,7 @@ def initialize_nonce():
     global current_nonce
     try:
         current_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
-        logger.info(f"🔄 Nonce diinisialisasi dari jaringan: {current_nonce}")
+        console.log(f"🔄 Nonce diinisialisasi dari jaringan: {current_nonce}")  # Hanya ke console
     except Exception as e:
         logger.error(f"❌ Gagal menginisialisasi nonce: {e}")
         raise
@@ -244,7 +244,7 @@ def load_wallets(ignore_sent=False, limit=None):
 
 def log_transaction(to_address, amount, status, tx_hash_or_error):
     with open(transaction_log_path, "a", encoding="utf-8") as f:
-        timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-% signage%d %H:%M:%S")
+        timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"{timestamp},{to_address},{amount},{status},{tx_hash_or_error}\n")
 
 def display_transaction_logs():
@@ -290,7 +290,7 @@ def check_logs():
     logger.info("📜 Menampilkan seluruh log transaksi...")
     display_transaction_logs()
 
-# Fungsi Pengiriman Token Diperbarui (tanpa logging gas ke file)
+# Fungsi Pengiriman Token (tanpa logging gas ke file)
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(3),
     wait=tenacity.wait_exponential(multiplier=2, min=2, max=10),
@@ -365,6 +365,7 @@ def reset_sent_wallets():
         logger.error(f"❌ Gagal mereset sent_wallets.txt: {e}")
         return False
 
+# Fungsi Batch Diperbarui untuk Hanya Log Token
 def send_token_batch(wallets, randomize=False):
     if randomize:
         random.shuffle(wallets)
@@ -372,10 +373,10 @@ def send_token_batch(wallets, randomize=False):
     total_wallets_sent = 0
 
     for i in range(0, len(wallets), BATCH_SIZE):
-        logger.info("🔄 Menginisialisasi ulang nonce sebelum batch baru...")
+        console.log("🔄 Menginisialisasi ulang nonce sebelum batch baru...")  # Nonce ke console saja
         initialize_nonce()
         batch = wallets[i:i + BATCH_SIZE]
-        logger.info(f"🚀 Memproses batch {i // BATCH_SIZE + 1} ({len(batch)} wallet)...")
+        logger.info(f"🚀 Memulai batch {i // BATCH_SIZE + 1} dengan {len(batch)} wallet")
         batch_wallets_sent = 0
         batch_total_token = 0.0
 
@@ -391,7 +392,7 @@ def send_token_batch(wallets, randomize=False):
                     progress.advance(task)
 
         total_wallets_sent += batch_wallets_sent
-        logger.info(f"📊 Total wallet berhasil dikirim di batch {i // BATCH_SIZE + 1}: {batch_wallets_sent}/{len(batch)}")
+        logger.info(f"📊 Batch {i // BATCH_SIZE + 1} selesai: {batch_wallets_sent}/{len(batch)} wallet dikirim, Total token: {batch_total_token:.4f}")
 
         batch_table = Table(title=f"📋 Rekap Batch {i // BATCH_SIZE + 1}", box=box.SIMPLE)
         batch_table.add_column("Kategori", style="cyan")
@@ -408,10 +409,10 @@ def send_token_batch(wallets, randomize=False):
             console.print(f"[bold green]📦 Total wallet berhasil dikirim: {total_wallets_sent}[/bold green]")
             return False
 
-        logger.info(f"📈 Menunggu {IDLE_SECONDS} detik sebelum batch berikutnya...")
+        logger.info(f"⏳ Menunggu {IDLE_SECONDS} detik sebelum batch berikutnya...")
         time.sleep(IDLE_SECONDS)
     
-    logger.info("✅ Pengiriman batch selesai.")
+    logger.info(f"✅ Pengiriman batch selesai. Total wallet dikirim: {total_wallets_sent}")
     console.print(f"[bold green]📦 Total wallet berhasil dikirim: {total_wallets_sent}[/bold green]")
     return True
 
