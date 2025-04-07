@@ -79,6 +79,8 @@ EXPLORER_URL = "https://sepolia.tea.xyz/"
 MAX_THREADS = int(os.getenv("MAX_THREADS", 5))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 10))
 IDLE_SECONDS = int(os.getenv("IDLE_SECONDS", 30))
+MIN_TOKEN_AMOUNT = float(os.getenv("MIN_TOKEN_AMOUNT", "0.1"))  # Batas minimal token per wallet
+MAX_TOKEN_AMOUNT = float(os.getenv("MAX_TOKEN_AMOUNT", "100.0"))  # Batas maksimal token per wallet
 
 if not PRIVATE_KEY or not RAW_SENDER_ADDRESS or not RPC_URL:
     logger.error("❌ PRIVATE_KEY, SENDER_ADDRESS, atau INFURA_URL tidak ditemukan di .env!")
@@ -179,11 +181,18 @@ def load_wallets():
                 if not w3.is_address(address):
                     logger.warning(f"⚠️ Alamat tidak valid: {address}, dilewati.")
                     continue
-                if address.lower() not in sent_set:
-                    try:
-                        wallets.append((address, float(amount)))
-                    except ValueError:
-                        logger.warning(f"⚠️ Jumlah tidak valid untuk alamat {address}: {amount}, dilewati.")
+                try:
+                    amount_float = float(amount)
+                    if amount_float < MIN_TOKEN_AMOUNT:
+                        logger.warning(f"⚠️ Jumlah {amount_float} untuk {address} di bawah minimum ({MIN_TOKEN_AMOUNT}), dilewati.")
+                        continue
+                    if amount_float > MAX_TOKEN_AMOUNT:
+                        logger.warning(f"⚠️ Jumlah {amount_float} untuk {address} melebihi maksimum ({MAX_TOKEN_AMOUNT}), dilewati.")
+                        continue
+                    if address.lower() not in sent_set:
+                        wallets.append((address, amount_float))
+                except ValueError:
+                    logger.warning(f"⚠️ Jumlah tidak valid untuk alamat {address}: {amount}, dilewati.")
     except Exception as e:
         logger.error(f"❌ Gagal membaca file wallet: {e}")
     return wallets
