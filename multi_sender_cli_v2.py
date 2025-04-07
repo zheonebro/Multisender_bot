@@ -5,7 +5,6 @@ import time
 from datetime import datetime, time as dt_time
 import threading
 import logging
-import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from rich.console import Console
@@ -14,10 +13,9 @@ from rich import box
 import web3
 import tenacity
 import schedule
-from tqdm import tqdm
 import pytz
 import sys
-from rich.progress import Progress, track
+from rich.progress import Progress
 from rich.table import Table
 from rich.prompt import Prompt
 
@@ -102,6 +100,9 @@ TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(TOKEN_CONTRACT_RAW)
 
 CSV_FILE = "wallets.csv"
 SENT_FILE = "sent_wallets.txt"
+
+# Log konfigurasi saat startup
+logger.info(f"⚙️ Konfigurasi: MIN_TOKEN_AMOUNT={MIN_TOKEN_AMOUNT}, MAX_TOKEN_AMOUNT={MAX_TOKEN_AMOUNT}, DAILY_LIMIT={DAILY_LIMIT}, MAX_THREADS={MAX_THREADS}, BATCH_SIZE={BATCH_SIZE}, IDLE_SECONDS={IDLE_SECONDS}")
 
 # Connect Web3
 w3 = web3.Web3(web3.Web3.HTTPProvider(RPC_URL))
@@ -202,12 +203,12 @@ def log_transaction(to_address, amount, status, tx_hash_or_error):
         timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"{timestamp},{to_address},{amount},{status},{tx_hash_or_error}\n")
 
-def display_transaction_logs():
+def display_transaction_logs(filter_type="all"):
     if not os.path.exists(transaction_log_path):
         console.print("📬 Belum ada transaksi yang dicatat.", style="yellow")
         return
 
-    table = Table(title="📌 LOG TRANSAKSI TOKEN", box=box.SIMPLE_HEAVY)
+    table = Table(title=f"📌 LOG TRANSAKSI TOKEN ({filter_type.upper()})", box=box.SIMPLE_HEAVY)
     table.add_column("Waktu", style="dim", width=20)
     table.add_column("Alamat Tujuan", style="cyan")
     table.add_column("Jumlah", justify="right", style="green")
@@ -219,30 +220,54 @@ def display_transaction_logs():
 
     with open(transaction_log_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
-        for line in lines[-15:]:
+        filtered_lines = []
+        for line in lines:
             parts = line.strip().split(",")
             if len(parts) >= 5:
-                waktu, alamat, jumlah, status, detail = parts
-                try:
-                    jumlah_float = float(jumlah)
-                    total_token += jumlah_float
-                except ValueError:
-                    jumlah_float = 0
+                status = parts[3].upper()
+                if filter_type == "all" or (filter_type == "success" and status == "SUCCESS") or (filter_type == "failed" and status == "FAILED"):
+                    filtered_lines.append(line)
+        
+        # Batasi ke 15 baris terakhir dari yang sudah difilter
+        for line in filtered_lines[-15:]:
+            parts = line.strip().split(",")
+            waktu, alamat, jumlah, status, detail = parts
+            try:
+                jumlah_float = float(jumlah)
+                total_token += jumlah_float
+            except ValueError:
+                jumlah_float = 0
 
-                if status.upper() == "SUCCESS":
-                    sukses += 1
-                    explorer_link = f"[link=https://sepolia.tea.xyz/tx/{detail}]🔗 {detail[:10]}...[/link]"
-                    table.add_row(waktu, alamat, f"{jumlah_float:.4f}", f"[green]{status}[/green]", explorer_link)
-                else:
-                    gagal += 1
-                    table.add_row(waktu, alamat, f"{jumlah_float:.4f}", f"[red]{status}[/red]", detail)
+            if status.upper() == "SUCCESS":
+                sukses += 1
+                explorer_link = f"[link=https://sepolia.tea.xyz/tx/{detail}]🔗 {detail[:10]}...[/link]"
+                table.add_row(waktu, alamat, f"{jumlah_float:.4f}", f"[green]{status}[/green]", explorer_link)
+            else:
+                gagal += 1
+                table.add_row(waktu, alamat, f"{jumlah_float:.4f}", f"[red]{status}[/red]", detail)
 
     console.print(table)
     console.print(f"✅ Total Sukses: [green]{sukses}[/green] | ❌ Gagal: [red]{gagal}[/red] | 📦 Total Token Dikirim: [cyan]{total_token:.4f}[/cyan]", style="bold")
 
 def check_logs():
     logger.info("📜 Menampilkan log transaksi terakhir...")
-    display_transaction_logs()
+    while True:
+        console.print("\n[bold cyan]=== PILIH FILTER LOG ===[/bold cyan]", style="cyan")
+        console.print("[1] Semua transaksi")
+        console.print("[2] Hanya transaksi sukses")
+        console.print("[3] Hanya transaksi gagal")
+        console.print("[0] Kembali ke menu utama")
+        
+        pilihan = Prompt.ask("Pilih filter", choices=["0", "1", "2", "3"], default="1")
+        
+        if pilihan == "1":
+            display_transaction_logs("all")
+        elif pilihan == "2":
+            display_transaction_logs("success")
+        elif pilihan == "3":
+            display_transaction_logs("failed")
+        elif pilihan == "0":
+            break
 
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(3),
@@ -255,11 +280,15 @@ def _send_token_with_retry(to_address, amount):
     to_address = web3.Web3.to_checksum_address(to_address)
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
+    # Estimasi gas secara dinamis
+    gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
+    gas_limit = int(gas_estimate * 1.2)  # Tambah 20% buffer
+
     tx = token_contract.functions.transfer(to_address, scaled_amount).build_transaction({
         'from': from_address,
         'nonce': get_next_nonce(),
-        'gas': 100_000,
-        'gasPrice': w3.to_wei(min(MAX_GAS_PRICE_GWEI, w3.eth.gas_price / 10**9), 'gwei')  # Dinamis dengan batas
+        'gas': gas_limit,
+        'gasPrice': w3.to_wei(min(MAX_GAS_PRICE_GWEI, w3.eth.gas_price / 10**9), 'gwei')
     })
 
     signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
@@ -290,7 +319,7 @@ def send_token_batch(wallets):
     total_sent = 0.0
     for i in range(0, len(wallets), BATCH_SIZE):
         logger.info("🔄 Menginisialisasi ulang nonce sebelum batch baru...")
-        initialize_nonce()  # Inisialisasi ulang nonce
+        initialize_nonce()
         batch = wallets[i:i + BATCH_SIZE]
         logger.info(f"🚀 Memproses batch {i // BATCH_SIZE + 1} ({len(batch)} wallet)...")
         with Progress() as progress:
@@ -315,7 +344,7 @@ def retry_failed_addresses():
         return
     logger.info(f"🔄 Mencoba ulang {len(failed_addresses)} alamat yang gagal...")
     send_token_batch(failed_addresses)
-    failed_addresses = []  # Reset setelah dicoba ulang
+    failed_addresses = []
 
 def main():
     logger.info("🟢 Fungsi `main()` dijalankan dari scheduler atau manual.")
@@ -334,6 +363,7 @@ def main():
 def run_cli():
     while True:
         console.print("\n[bold cyan]=== MENU UTAMA ===[/bold cyan]", style="cyan")
+        console.print(f"[bold yellow]Batas Token per Wallet: {MIN_TOKEN_AMOUNT} - {MAX_TOKEN_AMOUNT}[/bold yellow]")
         console.print("[1] Jalankan pengiriman token sekarang")
         console.print("[2] Tampilkan log transaksi")
         console.print("[3] Jalankan mode penjadwalan (scheduler)")
