@@ -156,7 +156,7 @@ def get_sepolia_tea_gas_price():
         data = response.json()
         gas_price_gwei = float(data.get("fast", 0)) * 1.2  # Buffer 20%
         return min(gas_price_gwei, MAX_GAS_PRICE_GWEI)
-ตรี
+        
     except requests.RequestException as e:
         logger.error(f"❌ Gagal mengambil gas price dari Sepolia TEA: {e}")
         network_gas_price = w3.eth.gas_price / 10**9 * 1.2  # Buffer 20%
