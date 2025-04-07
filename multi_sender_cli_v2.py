@@ -297,8 +297,10 @@ def reset_sent_wallets():
         with open(SENT_FILE, "w") as f:
             f.write("")  # Kosongkan file
         logger.info("🔄 File sent_wallets.txt telah direset.")
+        console.print("[bold green]✅ Reset limit harian berhasil! Anda bisa memulai pengiriman ulang.[/bold green]")
     except Exception as e:
         logger.error(f"❌ Gagal mereset sent_wallets.txt: {e}")
+        console.print("[bold red]❌ Gagal mereset limit harian.[/bold red]")
 
 def send_token_batch(wallets):
     total_sent = 0.0
@@ -366,9 +368,10 @@ def run_cli():
         console.print("[2] Tampilkan log transaksi")
         console.print("[3] Jalankan mode penjadwalan (scheduler)")
         console.print("[4] Coba ulang alamat yang gagal")
+        console.print("[5] Reset limit harian (kosongkan sent_wallets.txt)")  # Opsi baru
         console.print("[0] Keluar")
 
-        pilihan = Prompt.ask("Pilih opsi", choices=["0", "1", "2", "3", "4"], default="0")
+        pilihan = Prompt.ask("Pilih opsi", choices=["0", "1", "2", "3", "4", "5"], default="0")
 
         if pilihan == "1":
             main()
@@ -383,6 +386,8 @@ def run_cli():
                 time.sleep(60)
         elif pilihan == "4":
             retry_failed_addresses()
+        elif pilihan == "5":
+            reset_sent_wallets()
         elif pilihan == "0":
             console.print("👋 Keluar dari program.", style="bold red")
             break
