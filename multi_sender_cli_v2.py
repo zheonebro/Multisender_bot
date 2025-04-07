@@ -290,7 +290,7 @@ def check_logs():
     logger.info("📜 Menampilkan seluruh log transaksi...")
     display_transaction_logs()
 
-# Fungsi Pengiriman Token Diperbarui
+# Fungsi Pengiriman Token Diperbaiki
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(3),
     wait=tenacity.wait_exponential(multiplier=2, min=2, max=10),
@@ -303,7 +303,7 @@ def _send_token_with_retry(to_address, amount):
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
     tea_gas_price = get_sepolia_tea_gas_price()
-    gas_price_to_use = min(tea_gas Daughterprice, MAX_GAS_PRICE_GWEI)
+    gas_price_to_use = min(tea_gas_price, MAX_GAS_PRICE_GWEI)  # Perbaikan typo
     logger.info(f"⛽ Menggunakan gas price (fast): {gas_price_to_use:.2f} Gwei")
 
     try:
@@ -408,128 +408,6 @@ def send_token_batch(wallets, randomize=False):
             console.print(f"[bold green]📦 Total wallet berhasil dikirim: {total_wallets_sent}[/bold green]")
             return False
 
-        logger.info(f"📈 Menunggu {IDLE_SECONDS} detik sebelum batch berikutnya...")
-        time.sleep(IDLE_SECONDS)
-    
-    logger.info("✅ Pengiriman batch selesai.")
-    console.print(f"[bold green]📦 Total wallet berhasil dikirim: {total_wallets_sent}[/bold green]")
-    return True
+        logger...
 
-def retry_failed_addresses():
-    global failed_addresses
-    if not failed_addresses:
-        logger.info("✅ Tidak ada alamat yang gagal untuk dicoba ulang.")
-        console.print("[bold green]✅ Tidak ada alamat yang gagal untuk dicoba ulang.[/bold green]")
-        return
-    logger.info(f"🔄 Mencoba ulang {len(failed_addresses)} alamat yang gagal...")
-    send_token_batch(failed_addresses)
-
-def get_next_schedule_time():
-    now = datetime.now(JAKARTA_TZ)
-    next_run = datetime.combine(now.date(), dt_time(8, 0), tzinfo=JAKARTA_TZ)
-    if now >= next_run:
-        next_run += timedelta(days=1)
-    return next_run
-
-def show_progress_timer():
-    next_run = get_next_schedule_time()
-    total_seconds = (next_run - datetime.now(JAKARTA_TZ)).total_seconds()
-    
-    with Progress(
-        TextColumn("[bold yellow]⏳ Menunggu pengiriman berikutnya pada {task.description}"),
-        BarColumn(),
-        TimeRemainingColumn(),
-        transient=True
-    ) as progress:
-        task = progress.add_task(f"{next_run.strftime('%Y-%m-%d 08:00 WIB')}", total=int(total_seconds))
-        while datetime.now(JAKARTA_TZ) < next_run:
-            elapsed = (datetime.now(JAKARTA_TZ) - (next_run - timedelta(seconds=total_seconds))).total_seconds()
-            progress.update(task, completed=int(elapsed))
-            time.sleep(1)
-        progress.update(task, completed=int(total_seconds))
-    logger.info("⏰ Waktu pengiriman berikutnya telah tiba!")
-
-def main(randomize=False):
-    logger.info("🟢 Fungsi `main()` dijalankan dari scheduler atau manual.")
-    reset_sent_wallets()
-    wallets = load_wallets(ignore_sent=True)
-    if not wallets:
-        logger.info("🚫 Tidak ada wallet untuk dikirim di wallets.csv.")
-        console.print("[bold yellow]ℹ️ Tidak ada wallet valid di wallets.csv untuk diproses.[/bold yellow]")
-        return False
-    required_amount = sum([amt for _, amt in wallets])
-    balance = check_balance()
-    if balance < required_amount:
-        logger.error(f"❌ Saldo tidak cukup! Dibutuhkan: {required_amount:.4f}, Tersedia: {balance:.4f}")
-        console.print(f"[bold red]❌ Saldo tidak cukup! Dibutuhkan: {required_amount:.4f}, Tersedia: {balance:.4f}[/bold red]")
-        return False
-    logger.info(f"💰 Jumlah wallet yang akan diproses: {len(wallets)}")
-    success = send_token_batch(wallets, randomize)
-    return success
-
-def ask_schedule_with_timeout():
-    result = [None]
-
-    def prompt_thread():
-        console.print("[bold yellow]ℹ️ Apakah Anda ingin melanjutkan dengan pengiriman berjadwal setiap hari pukul 08:00 WIB?[/bold yellow]")
-        result[0] = Prompt.ask("Pilih opsi (1=Ya, 0=Tidak)", choices=["0", "1"], default="1")
-
-    thread = threading.Thread(target=prompt_thread)
-    thread.start()
-    thread.join(timeout=10)
-
-    if result[0] is None:
-        console.print("[bold yellow]⏰ Tidak ada respon dalam 10 detik, default ke pengiriman berjadwal secara acak.[/bold yellow]")
-        return True
-    return result[0] == "1"
-
-def run_cli():
-    while True:
-        console.print("\n[bold cyan]=== MENU UTAMA ===[/bold cyan]", style="cyan")
-        console.print(f"[bold yellow]Rentang Token Acak per Wallet: {MIN_TOKEN_AMOUNT} - {MAX_TOKEN_AMOUNT}[/bold yellow]")
-        console.print(f"[bold yellow]Limit Harian Wallet: {DAILY_WALLET_LIMIT} alamat[/bold yellow]")
-        console.print(f"[bold yellow]Gas Speed: fast (max {MAX_GAS_PRICE_GWEI} Gwei)[/bold yellow]")
-        console.print("[1] Jalankan pengiriman token sekarang (berurutan)")
-        console.print("[2] Jalankan pengiriman token sekarang (acak)")
-        console.print("[3] Tampilkan log transaksi")
-        console.print("[4] Jalankan mode penjadwalan (scheduler)")
-        console.print("[5] Coba ulang alamat yang gagal")
-        console.print("[0] Keluar")
-
-        pilihan = Prompt.ask("Pilih opsi", choices=["0", "1", "2", "3", "4", "5"], default="0")
-
-        if pilihan in ["1", "2"]:
-            randomize = (pilihan == "2")
-            success = main(randomize=randomize)
-            if success:
-                schedule_choice = ask_schedule_with_timeout()
-                if schedule_choice:
-                    schedule.every().day.at("08:00").do(main, randomize=True)
-                    logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB (acak)")
-                    console.print("[bold green]🔌 Scheduler aktif setiap hari pukul 08:00 WIB (acak)[/bold green]")
-                    while True:
-                        schedule.run_pending()
-                        if not schedule.jobs:
-                            show_progress_timer()
-                            schedule.every().day.at("08:00").do(main, randomize=True)
-                        time.sleep(1)
-        elif pilihan == "3":
-            check_logs()
-        elif pilihan == "4":
-            schedule.every().day.at("08:00").do(main, randomize=True)
-            logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB (acak)")
-            console.print("[bold green]🔌 Scheduler aktif setiap hari pukul 08:00 WIB (acak)[/bold green]")
-            while True:
-                schedule.run_pending()
-                if not schedule.jobs:
-                    show_progress_timer()
-                    schedule.every().day.at("08:00").do(main, randomize=True)
-                time.sleep(1)
-        elif pilihan == "5":
-            retry_failed_addresses()
-        elif pilihan == "0":
-            console.print("👋 Keluar dari program.", style="bold red")
-            break
-
-if __name__ == "__main__":
-    run_cli()
+Something went wrong, please try again.
