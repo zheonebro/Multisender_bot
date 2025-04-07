@@ -18,7 +18,6 @@ import sys
 from rich.progress import Progress
 from rich.table import Table
 from rich.prompt import Prompt, IntPrompt
-import threading  # Untuk timer
 
 # Init
 console = Console()
@@ -310,13 +309,16 @@ def send_token_threadsafe(to_address, amount):
         log_transaction(to_address, amount, "SUCCESS", tx_hash)
         with open(SENT_FILE, "a") as f:
             f.write(f"{to_address}\n")
+        return True  # Mengembalikan True jika sukses
     except Exception as e:
         logger.error(f"❌ Gagal mengirim ke {to_address} setelah retry: {e}")
         log_transaction(to_address, amount, "FAILED", str(e))
         failed_addresses.append((to_address, amount))
-    delay = random.uniform(0.5, 2.0)
-    logger.info(f"⏱️ Delay adaptif {delay:.2f} detik sebelum lanjut...")
-    time.sleep(delay)
+        return False  # Mengembalikan False jika gagal
+    finally:
+        delay = random.uniform(0.5, 2.0)
+        logger.info(f"⏱️ Delay adaptif {delay:.2f} detik sebelum lanjut...")
+        time.sleep(delay)
 
 def reset_sent_wallets():
     try:
@@ -338,17 +340,27 @@ def send_token_batch(wallets, randomize=False):
         random.shuffle(wallets)
         logger.info("🔀 Daftar wallet diacak untuk pengiriman acak.")
     total_sent = 0.0
+    total_wallets_sent = 0  # Menghitung total wallet yang berhasil dikirim
+
     for i in range(0, len(wallets), BATCH_SIZE):
         logger.info("🔄 Menginisialisasi ulang nonce sebelum batch baru...")
         initialize_nonce()
         batch = wallets[i:i + BATCH_SIZE]
         logger.info(f"🚀 Memproses batch {i // BATCH_SIZE + 1} ({len(batch)} wallet)...")
+        batch_wallets_sent = 0  # Menghitung wallet yang berhasil dikirim di batch ini
+
         with Progress() as progress:
             task = progress.add_task("Mengirim token...", total=len(batch))
             with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
                 futures = [executor.submit(send_token_threadsafe, addr, amt) for addr, amt in batch]
-                for _ in as_completed(futures):
+                for future in as_completed(futures):
+                    if future.result():  # Cek apakah pengiriman sukses
+                        batch_wallets_sent += 1
                     progress.advance(task)
+
+        logger.info(f"📊 Total wallet berhasil dikirim di batch {i // BATCH_SIZE + 1}: {batch_wallets_sent}/{len(batch)}")
+        total_wallets_sent += batch_wallets_sent
+
         logger.info(f"📈 Menunggu {IDLE_SECONDS} detik sebelum batch berikutnya...")
         time.sleep(IDLE_SECONDS)
 
@@ -370,8 +382,11 @@ def send_token_batch(wallets, randomize=False):
                         return send_token_batch(new_wallets, randomize)
                 else:
                     logger.info("⏳ Menunggu jadwal reset otomatis besok pukul 08:00 WIB.")
+                    console.print(f"[bold green]📦 Total wallet berhasil dikirim: {total_wallets_sent}[/bold green]")
                     return False
+    
     logger.info("✅ Pengiriman batch selesai tanpa mencapai limit harian.")
+    console.print(f"[bold green]📦 Total wallet berhasil dikirim: {total_wallets_sent}[/bold green]")
     return True
 
 def retry_failed_addresses():
@@ -405,7 +420,6 @@ def ask_schedule_with_timeout():
         console.print("[bold yellow]ℹ️ Apakah Anda ingin melanjutkan dengan pengiriman berjadwal setiap hari pukul 08:00 WIB?[/bold yellow]")
         result[0] = Prompt.ask("Pilih opsi (1=Ya, 0=Tidak)", choices=["0", "1"], default="1")
 
-    # Jalankan prompt dalam thread terpisah
     thread = threading.Thread(target=prompt_thread)
     thread.start()
     thread.join(timeout=10)  # Tunggu maksimum 10 detik
@@ -437,7 +451,7 @@ def run_cli():
             if success:
                 schedule_choice = ask_schedule_with_timeout()
                 if schedule_choice:
-                    schedule.every().day.at("08:00").do(main, randomize=True)  # Default acak untuk scheduler
+                    schedule.every().day.at("08:00").do(main, randomize=True)
                     logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB (acak)")
                     while True:
                         schedule.run_pending()
@@ -446,7 +460,7 @@ def run_cli():
         elif pilihan == "3":
             check_logs()
         elif pilihan == "4":
-            schedule.every().day.at("08:00").do(main, randomize=True)  # Default acak untuk scheduler
+            schedule.every().day.at("08:00").do(main, randomize=True)
             logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB (acak)")
             while True:
                 schedule.run_pending()
@@ -481,7 +495,7 @@ def run_cli():
                         if success:
                             schedule_choice = ask_schedule_with_timeout()
                             if schedule_choice:
-                                schedule.every().day.at("08:00").do(main, randomize=True)  # Default acak
+                                schedule.every().day.at("08:00").do(main, randomize=True)
                                 logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB (acak)")
                                 while True:
                                     schedule.run_pending()
