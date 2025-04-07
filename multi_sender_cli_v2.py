@@ -196,7 +196,6 @@ def load_wallets(ignore_sent=False, limit=None):
     except Exception as e:
         logger.error(f"❌ Gagal membaca file wallet: {e}")
     
-    # Batasi jumlah wallet jika limit diberikan
     if limit is not None and limit < len(wallets):
         wallets = wallets[:limit]
         logger.info(f"📏 Jumlah wallet dibatasi menjadi: {limit}")
@@ -309,12 +308,12 @@ def send_token_threadsafe(to_address, amount):
         log_transaction(to_address, amount, "SUCCESS", tx_hash)
         with open(SENT_FILE, "a") as f:
             f.write(f"{to_address}\n")
-        return True  # Mengembalikan True jika sukses
+        return True
     except Exception as e:
         logger.error(f"❌ Gagal mengirim ke {to_address} setelah retry: {e}")
         log_transaction(to_address, amount, "FAILED", str(e))
         failed_addresses.append((to_address, amount))
-        return False  # Mengembalikan False jika gagal
+        return False
     finally:
         delay = random.uniform(0.5, 2.0)
         logger.info(f"⏱️ Delay adaptif {delay:.2f} detik sebelum lanjut...")
@@ -324,15 +323,10 @@ def reset_sent_wallets():
     try:
         with open(SENT_FILE, "w") as f:
             f.write("")
-        logger.info("🔄 File sent_wallets.txt telah direset.")
-        console.print("[bold green]✅ Reset limit harian berhasil! Anda bisa memulai pengiriman ulang.[/bold green]")
-        with open(SENT_FILE, "r") as f:
-            content = f.read().strip()
-            logger.info(f"📜 Isi sent_wallets.txt setelah reset: '{content}' (panjang: {len(content)})")
+        logger.info("🔄 File sent_wallets.txt telah direset secara otomatis.")
         return True
     except Exception as e:
         logger.error(f"❌ Gagal mereset sent_wallets.txt: {e}")
-        console.print("[bold red]❌ Gagal mereset limit harian.[/bold red]")
         return False
 
 def send_token_batch(wallets, randomize=False):
@@ -340,21 +334,21 @@ def send_token_batch(wallets, randomize=False):
         random.shuffle(wallets)
         logger.info("🔀 Daftar wallet diacak untuk pengiriman acak.")
     total_sent = 0.0
-    total_wallets_sent = 0  # Menghitung total wallet yang berhasil dikirim
+    total_wallets_sent = 0
 
     for i in range(0, len(wallets), BATCH_SIZE):
         logger.info("🔄 Menginisialisasi ulang nonce sebelum batch baru...")
         initialize_nonce()
         batch = wallets[i:i + BATCH_SIZE]
         logger.info(f"🚀 Memproses batch {i // BATCH_SIZE + 1} ({len(batch)} wallet)...")
-        batch_wallets_sent = 0  # Menghitung wallet yang berhasil dikirim di batch ini
+        batch_wallets_sent = 0
 
         with Progress() as progress:
             task = progress.add_task("Mengirim token...", total=len(batch))
             with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
                 futures = [executor.submit(send_token_threadsafe, addr, amt) for addr, amt in batch]
                 for future in as_completed(futures):
-                    if future.result():  # Cek apakah pengiriman sukses
+                    if future.result():
                         batch_wallets_sent += 1
                     progress.advance(task)
 
@@ -370,20 +364,8 @@ def send_token_batch(wallets, randomize=False):
             if total_sent >= DAILY_LIMIT:
                 logger.warning(f"🚘 Mencapai batas harian {DAILY_LIMIT}, berhenti sementara.")
                 console.print(f"[bold red]ℹ️ Limit harian tercapai: {total_sent:.4f}/{DAILY_LIMIT} token telah dikirim hari ini.[/bold red]")
-                console.print("[bold yellow]Pilih opsi:[/bold yellow]")
-                console.print("[1] Reset manual limit harian (kosongkan sent_wallets.txt)")
-                console.print("[2] Tunggu jadwal reset otomatis besok pukul 08:00 WIB")
-                pilihan = Prompt.ask("Pilih opsi", choices=["1", "2"], default="2")
-                if pilihan == "1":
-                    if reset_sent_wallets():
-                        logger.info("🔄 Memulai ulang pengiriman setelah reset manual...")
-                        new_wallets = load_wallets(ignore_sent=True)
-                        logger.info(f"📋 Jumlah wallet yang dimuat setelah reset: {len(new_wallets)}")
-                        return send_token_batch(new_wallets, randomize)
-                else:
-                    logger.info("⏳ Menunggu jadwal reset otomatis besok pukul 08:00 WIB.")
-                    console.print(f"[bold green]📦 Total wallet berhasil dikirim: {total_wallets_sent}[/bold green]")
-                    return False
+                console.print(f"[bold green]📦 Total wallet berhasil dikirim: {total_wallets_sent}[/bold green]")
+                return False
     
     logger.info("✅ Pengiriman batch selesai tanpa mencapai limit harian.")
     console.print(f"[bold green]📦 Total wallet berhasil dikirim: {total_wallets_sent}[/bold green]")
@@ -399,10 +381,11 @@ def retry_failed_addresses():
 
 def main(randomize=False):
     logger.info("🟢 Fungsi `main()` dijalankan dari scheduler atau manual.")
-    wallets = load_wallets(ignore_sent=False)
+    reset_sent_wallets()  # Reset otomatis sebelum pengiriman
+    wallets = load_wallets(ignore_sent=True)  # ignore_sent=True karena sudah direset
     if not wallets:
-        logger.info("🚫 Tidak ada wallet baru untuk dikirim berdasarkan sent_wallets.txt.")
-        console.print("[bold yellow]ℹ️ Tidak ada wallet baru untuk dikirim atau semua telah dikirim sebelumnya.[/bold yellow]")
+        logger.info("🚫 Tidak ada wallet untuk dikirim di wallets.csv.")
+        console.print("[bold yellow]ℹ️ Tidak ada wallet valid di wallets.csv untuk diproses.[/bold yellow]")
         return False
     required_amount = sum([amt for _, amt in wallets])
     balance = check_balance()
@@ -414,7 +397,7 @@ def main(randomize=False):
     return success
 
 def ask_schedule_with_timeout():
-    result = [None]  # List untuk menyimpan hasil input dari thread
+    result = [None]
 
     def prompt_thread():
         console.print("[bold yellow]ℹ️ Apakah Anda ingin melanjutkan dengan pengiriman berjadwal setiap hari pukul 08:00 WIB?[/bold yellow]")
@@ -422,11 +405,11 @@ def ask_schedule_with_timeout():
 
     thread = threading.Thread(target=prompt_thread)
     thread.start()
-    thread.join(timeout=10)  # Tunggu maksimum 10 detik
+    thread.join(timeout=10)
 
     if result[0] is None:
         console.print("[bold yellow]⏰ Tidak ada respon dalam 10 detik, default ke pengiriman berjadwal secara acak.[/bold yellow]")
-        return True  # Default ke "Ya"
+        return True
     return result[0] == "1"
 
 def run_cli():
@@ -440,10 +423,9 @@ def run_cli():
         console.print("[3] Tampilkan log transaksi")
         console.print("[4] Jalankan mode penjadwalan (scheduler)")
         console.print("[5] Coba ulang alamat yang gagal")
-        console.print("[6] Reset limit harian (kosongkan sent_wallets.txt)")
         console.print("[0] Keluar")
 
-        pilihan = Prompt.ask("Pilih opsi", choices=["0", "1", "2", "3", "4", "5", "6"], default="0")
+        pilihan = Prompt.ask("Pilih opsi", choices=["0", "1", "2", "3", "4", "5"], default="0")
 
         if pilihan in ["1", "2"]:
             randomize = (pilihan == "2")
@@ -468,41 +450,6 @@ def run_cli():
                 time.sleep(60)
         elif pilihan == "5":
             retry_failed_addresses()
-        elif pilihan == "6":
-            if reset_sent_wallets():
-                console.print("[bold yellow]ℹ️ Apakah Anda ingin langsung memulai pengiriman token sekarang?[/bold yellow]")
-                lanjut = Prompt.ask("Pilih opsi (1=Ya, 0=Tidak)", choices=["0", "1"], default="0")
-                if lanjut == "1":
-                    available_wallets = load_wallets(ignore_sent=True)
-                    console.print(f"[bold green]📋 Jumlah wallet yang tersedia untuk dikirim: {len(available_wallets)}[/bold green]")
-                    
-                    if not available_wallets:
-                        console.print("[bold red]❌ Tidak ada wallet valid di wallets.csv untuk diproses. Periksa isi file![/bold red]")
-                        continue
-                    
-                    console.print("[bold yellow]Masukkan jumlah wallet yang akan dikirim token (maksimum sesuai jumlah tersedia):[/bold yellow]")
-                    limit = IntPrompt.ask("Jumlah wallet", default=len(available_wallets), min=1, max=len(available_wallets))
-                    
-                    console.print("[bold yellow]Pilih mode pengiriman:[/bold yellow]")
-                    console.print("[1] Berurutan")
-                    console.print("[2] Acak")
-                    mode = Prompt.ask("Pilih mode", choices=["1", "2"], default="1")
-                    
-                    wallets = load_wallets(ignore_sent=True, limit=limit)
-                    logger.info(f"📋 Jumlah wallet yang dimuat setelah reset: {len(wallets)}")
-                    if wallets:
-                        success = main(randomize=(mode == "2"))
-                        if success:
-                            schedule_choice = ask_schedule_with_timeout()
-                            if schedule_choice:
-                                schedule.every().day.at("08:00").do(main, randomize=True)
-                                logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB (acak)")
-                                while True:
-                                    schedule.run_pending()
-                                    logger.info("💤 Bot aktif. Menunggu jadwal pengiriman selanjutnya...")
-                                    time.sleep(60)
-                    else:
-                        console.print("[bold red]❌ Tidak ada wallet valid di wallets.csv untuk diproses. Periksa isi file![/bold red]")
         elif pilihan == "0":
             console.print("👋 Keluar dari program.", style="bold red")
             break
