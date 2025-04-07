@@ -73,14 +73,14 @@ RAW_SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_RAW = os.getenv("TOKEN_CONTRACT")
 MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "50"))
-EXPLORER_URL = "https://sepolia.tea.xyz/"
+EXPLORER_URL = "https://sepolia.tea.xyz/tx/"
 
 MAX_THREADS = int(os.getenv("MAX_THREADS", 5))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 10))
 IDLE_SECONDS = int(os.getenv("IDLE_SECONDS", 30))
 MIN_TOKEN_AMOUNT = 10.0
 MAX_TOKEN_AMOUNT = 50.0
-DAILY_WALLET_LIMIT = int(os.getenv("DAILY_WALLET_LIMIT", 200))  # Default 200 wallet per hari
+DAILY_WALLET_LIMIT = int(os.getenv("DAILY_WALLET_LIMIT", 100))
 
 if not PRIVATE_KEY or not RAW_SENDER_ADDRESS or not RPC_URL:
     logger.error("❌ PRIVATE_KEY, SENDER_ADDRESS, atau INFURA_URL tidak ditemukan di .env!")
@@ -237,7 +237,7 @@ def display_transaction_logs():
     table.add_column("Alamat Tujuan", style="cyan")
     table.add_column("Jumlah", justify="right", style="green")
     table.add_column("Status", style="bold")
-    table.add_column("TxHash/Error", overflow="fold")
+    table.add_column("Explorer Link", overflow="fold")
 
     sukses = gagal = 0
     total_token = 0.0
@@ -256,7 +256,7 @@ def display_transaction_logs():
 
                 if status.upper() == "SUCCESS":
                     sukses += 1
-                    explorer_link = f"[link=https://sepolia.tea.xyz/tx/{detail}]🔗 {detail[:10]}...[/link]"
+                    explorer_link = f"[link={EXPLORER_URL}{detail}]🔗 {detail[:10]}...[/link]"
                     table.add_row(str(idx), waktu, alamat, f"{jumlah_float:.4f}", f"[green]{status}[/green]", explorer_link)
                 else:
                     gagal += 1
@@ -306,12 +306,12 @@ def send_token_threadsafe(to_address, amount):
         log_transaction(to_address, amount, "SUCCESS", tx_hash)
         with open(SENT_FILE, "a") as f:
             f.write(f"{to_address}\n")
-        return True
+        return True, amount  # Mengembalikan status dan jumlah token
     except Exception as e:
         logger.error(f"❌ Gagal mengirim ke {to_address} setelah retry: {e}")
         log_transaction(to_address, amount, "FAILED", str(e))
         failed_addresses.append((to_address, amount))
-        return False
+        return False, 0  # Mengembalikan False dan 0 untuk jumlah token
     finally:
         delay = random.uniform(0.5, 2.0)
         logger.debug(f"⏱️ Delay adaptif {delay:.2f} detik sebelum lanjut...")
@@ -339,18 +339,31 @@ def send_token_batch(wallets, randomize=False):
         batch = wallets[i:i + BATCH_SIZE]
         logger.info(f"🚀 Memproses batch {i // BATCH_SIZE + 1} ({len(batch)} wallet)...")
         batch_wallets_sent = 0
+        batch_total_token = 0.0
 
         with Progress() as progress:
             task = progress.add_task("Mengirim token...", total=len(batch))
             with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
                 futures = [executor.submit(send_token_threadsafe, addr, amt) for addr, amt in batch]
                 for future in as_completed(futures):
-                    if future.result():
+                    success, amount = future.result()
+                    if success:
                         batch_wallets_sent += 1
+                        batch_total_token += amount
                     progress.advance(task)
 
         total_wallets_sent += batch_wallets_sent
         logger.info(f"📊 Total wallet berhasil dikirim di batch {i // BATCH_SIZE + 1}: {batch_wallets_sent}/{len(batch)}")
+
+        # Rekap batch
+        batch_table = Table(title=f"📋 Rekap Batch {i // BATCH_SIZE + 1}", box=box.SIMPLE)
+        batch_table.add_column("Kategori", style="cyan")
+        batch_table.add_column("Nilai", justify="right", style="green")
+        batch_table.add_row("Total Wallet dalam Batch", str(len(batch)))
+        batch_table.add_row("Wallet Berhasil Dikirim", str(batch_wallets_sent))
+        batch_table.add_row("Wallet Gagal", str(len(batch) - batch_wallets_sent))
+        batch_table.add_row("Total Token Dikirim", f"{batch_total_token:.4f}")
+        console.print(batch_table)
 
         if DAILY_WALLET_LIMIT > 0 and total_wallets_sent >= DAILY_WALLET_LIMIT:
             logger.warning(f"🚘 Mencapai batas harian {DAILY_WALLET_LIMIT} wallet, berhenti sementara.")
