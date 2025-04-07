@@ -19,6 +19,7 @@ import pytz
 import sys
 from rich.progress import Progress, track
 from rich.table import Table
+from rich.prompt import Prompt
 
 # Init
 console = Console()
@@ -90,9 +91,6 @@ try:
     DAILY_LIMIT = float(DAILY_LIMIT_RAW)
 except ValueError:
     DAILY_LIMIT = 0
-
-MIN_DELAY_SECONDS = float(os.getenv("MIN_DELAY_SECONDS", "0.5"))
-MAX_DELAY_SECONDS = float(os.getenv("MAX_DELAY_SECONDS", "2"))
 
 if not TOKEN_CONTRACT_RAW:
     logger.error("❌ Environment variable 'TOKEN_CONTRACT' tidak ditemukan atau kosong!")
@@ -253,6 +251,9 @@ def send_token_threadsafe(to_address, amount):
         logger.error(f"❌ Gagal mengirim ke {to_address} setelah retry: {e}")
         log_transaction(to_address, amount, "FAILED", str(e))
         failed_addresses.append((to_address, amount))
+    delay = random.uniform(0.5, 2.0)
+    logger.info(f"⏱️ Delay adaptif {delay:.2f} detik sebelum lanjut...")
+    time.sleep(delay)
 
 def send_token_batch(wallets):
     total_sent = 0.0
@@ -275,7 +276,7 @@ def send_token_batch(wallets):
                 break
 
 def main():
-    logger.info("🟢 Fungsi `main()` dijalankan dari scheduler.")
+    logger.info("🟢 Fungsi `main()` dijalankan dari scheduler atau manual.")
     logger.info("🔄 Inisialisasi nonce awal...")
     initialize_nonce()
     wallets = load_wallets()
@@ -285,17 +286,30 @@ def main():
     logger.info(f"💰 Jumlah wallet yang akan diproses: {len(wallets)}")
     send_token_batch(wallets)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--logs", action="store_true", help="Lihat log transaksi terakhir")
-    args = parser.parse_args()
+def run_cli():
+    while True:
+        console.print("\n[bold cyan]=== MENU UTAMA ===[/bold cyan]", style="cyan")
+        console.print("[1] Jalankan pengiriman token sekarang")
+        console.print("[2] Tampilkan log transaksi")
+        console.print("[3] Jalankan mode penjadwalan (scheduler)")
+        console.print("[0] Keluar")
 
-    if args.logs:
-        check_logs()
-    else:
-        schedule.every().day.at("08:00").do(main)
-        logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB")
-        while True:
-            schedule.run_pending()
-            logger.info("💤 Bot aktif. Menunggu jadwal pengiriman selanjutnya...")
-            time.sleep(60)
+        pilihan = Prompt.ask("Pilih opsi", choices=["0", "1", "2", "3"], default="0")
+
+        if pilihan == "1":
+            main()
+        elif pilihan == "2":
+            check_logs()
+        elif pilihan == "3":
+            schedule.every().day.at("08:00").do(main)
+            logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB")
+            while True:
+                schedule.run_pending()
+                logger.info("💤 Bot aktif. Menunggu jadwal pengiriman selanjutnya...")
+                time.sleep(60)
+        elif pilihan == "0":
+            console.print("👋 Keluar dari program.", style="bold red")
+            break
+
+if __name__ == "__main__":
+    run_cli()
