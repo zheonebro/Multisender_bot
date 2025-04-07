@@ -203,12 +203,13 @@ def log_transaction(to_address, amount, status, tx_hash_or_error):
         timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"{timestamp},{to_address},{amount},{status},{tx_hash_or_error}\n")
 
-def display_transaction_logs(filter_type="all"):
+def display_transaction_logs():
     if not os.path.exists(transaction_log_path):
         console.print("📬 Belum ada transaksi yang dicatat.", style="yellow")
         return
 
-    table = Table(title=f"📌 LOG TRANSAKSI TOKEN ({filter_type.upper()})", box=box.SIMPLE_HEAVY)
+    table = Table(title="📌 LOG TRANSAKSI TOKEN (SELURUH DATA)", box=box.SIMPLE_HEAVY)
+    table.add_column("No", justify="center", style="dim")
     table.add_column("Waktu", style="dim", width=20)
     table.add_column("Alamat Tujuan", style="cyan")
     table.add_column("Jumlah", justify="right", style="green")
@@ -220,54 +221,30 @@ def display_transaction_logs(filter_type="all"):
 
     with open(transaction_log_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
-        filtered_lines = []
-        for line in lines:
+        for idx, line in enumerate(lines, 1):
             parts = line.strip().split(",")
             if len(parts) >= 5:
-                status = parts[3].upper()
-                if filter_type == "all" or (filter_type == "success" and status == "SUCCESS") or (filter_type == "failed" and status == "FAILED"):
-                    filtered_lines.append(line)
-        
-        # Batasi ke 15 baris terakhir dari yang sudah difilter
-        for line in filtered_lines[-15:]:
-            parts = line.strip().split(",")
-            waktu, alamat, jumlah, status, detail = parts
-            try:
-                jumlah_float = float(jumlah)
-                total_token += jumlah_float
-            except ValueError:
-                jumlah_float = 0
+                waktu, alamat, jumlah, status, detail = parts
+                try:
+                    jumlah_float = float(jumlah)
+                    total_token += jumlah_float
+                except ValueError:
+                    jumlah_float = 0
 
-            if status.upper() == "SUCCESS":
-                sukses += 1
-                explorer_link = f"[link=https://sepolia.tea.xyz/tx/{detail}]🔗 {detail[:10]}...[/link]"
-                table.add_row(waktu, alamat, f"{jumlah_float:.4f}", f"[green]{status}[/green]", explorer_link)
-            else:
-                gagal += 1
-                table.add_row(waktu, alamat, f"{jumlah_float:.4f}", f"[red]{status}[/red]", detail)
+                if status.upper() == "SUCCESS":
+                    sukses += 1
+                    explorer_link = f"[link=https://sepolia.tea.xyz/tx/{detail}]🔗 {detail[:10]}...[/link]"
+                    table.add_row(str(idx), waktu, alamat, f"{jumlah_float:.4f}", f"[green]{status}[/green]", explorer_link)
+                else:
+                    gagal += 1
+                    table.add_row(str(idx), waktu, alamat, f"{jumlah_float:.4f}", f"[red]{status}[/red]", detail)
 
     console.print(table)
     console.print(f"✅ Total Sukses: [green]{sukses}[/green] | ❌ Gagal: [red]{gagal}[/red] | 📦 Total Token Dikirim: [cyan]{total_token:.4f}[/cyan]", style="bold")
 
 def check_logs():
-    logger.info("📜 Menampilkan log transaksi terakhir...")
-    while True:
-        console.print("\n[bold cyan]=== PILIH FILTER LOG ===[/bold cyan]", style="cyan")
-        console.print("[1] Semua transaksi")
-        console.print("[2] Hanya transaksi sukses")
-        console.print("[3] Hanya transaksi gagal")
-        console.print("[0] Kembali ke menu utama")
-        
-        pilihan = Prompt.ask("Pilih filter", choices=["0", "1", "2", "3"], default="1")
-        
-        if pilihan == "1":
-            display_transaction_logs("all")
-        elif pilihan == "2":
-            display_transaction_logs("success")
-        elif pilihan == "3":
-            display_transaction_logs("failed")
-        elif pilihan == "0":
-            break
+    logger.info("📜 Menampilkan seluruh log transaksi...")
+    display_transaction_logs()
 
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(3),
@@ -315,6 +292,14 @@ def send_token_threadsafe(to_address, amount):
     logger.info(f"⏱️ Delay adaptif {delay:.2f} detik sebelum lanjut...")
     time.sleep(delay)
 
+def reset_sent_wallets():
+    try:
+        with open(SENT_FILE, "w") as f:
+            f.write("")  # Kosongkan file
+        logger.info("🔄 File sent_wallets.txt telah direset.")
+    except Exception as e:
+        logger.error(f"❌ Gagal mereset sent_wallets.txt: {e}")
+
 def send_token_batch(wallets):
     total_sent = 0.0
     for i in range(0, len(wallets), BATCH_SIZE):
@@ -335,7 +320,19 @@ def send_token_batch(wallets):
             total_sent += sum([amt for _, amt in batch])
             if total_sent >= DAILY_LIMIT:
                 logger.warning(f"🚘 Mencapai batas harian {DAILY_LIMIT}, berhenti sementara.")
-                break
+                console.print(f"[bold red]ℹ️ Limit harian tercapai: {total_sent:.4f}/{DAILY_LIMIT} token telah dikirim hari ini.[/bold red]")
+                console.print("[bold yellow]Pilih opsi:[/bold yellow]")
+                console.print("[1] Reset manual limit harian (kosongkan sent_wallets.txt)")
+                console.print("[2] Tunggu jadwal reset otomatis besok pukul 08:00 WIB")
+                pilihan = Prompt.ask("Pilih opsi", choices=["1", "2"], default="2")
+                if pilihan == "1":
+                    reset_sent_wallets()
+                    logger.info("🔄 Memulai ulang pengiriman setelah reset manual...")
+                    return send_token_batch(wallets)  # Rekursif untuk melanjutkan
+                else:
+                    logger.info("⏳ Menunggu jadwal reset otomatis besok pukul 08:00 WIB.")
+                    return False  # Hentikan proses
+    return True  # Proses selesai tanpa mencapai limit
 
 def retry_failed_addresses():
     global failed_addresses
@@ -351,6 +348,7 @@ def main():
     wallets = load_wallets()
     if not wallets:
         logger.info("🚫 Tidak ada wallet baru untuk dikirim.")
+        console.print("[bold yellow]ℹ️ Tidak ada wallet baru untuk dikirim atau semua telah mencapai limit harian.[/bold yellow]")
         return
     required_amount = sum([amt for _, amt in wallets])
     balance = check_balance()
