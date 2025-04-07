@@ -23,7 +23,7 @@ from rich.prompt import Prompt, IntPrompt
 console = Console()
 load_dotenv()
 
-# Banner
+# Banner dan setup logging sama seperti sebelumnya, tidak diubah
 BANNER = """
 ███████╗██████╗  ██████╗  ██████╗ ██████╗  ██████╗ ███╗   ██╗
 ██╔════╝██╔══██╗██╔═══██╗██╔════╝ ██╔══██╗██╔═══██╗████╗  ██║
@@ -34,7 +34,6 @@ BANNER = """
 """
 console.print(Panel.fit(BANNER, title="[bold green]🚀 TEA SEPOLIA TESNET Sender Bot[/bold green]", border_style="cyan", box=box.DOUBLE))
 
-# Setup logging
 log_dir = "runtime_logs"
 os.makedirs(log_dir, exist_ok=True)
 log_path = os.path.join(log_dir, "runtime.log")
@@ -57,7 +56,7 @@ logger.setLevel(logging.INFO)
 file_handler = logging.FileHandler(log_path, encoding="utf-8")
 stream_handler = logging.StreamHandler()
 
-formatter = JakartaFormatter(fmt="%(asctime)s %(message)s", datefmt="[%Y-%m-%d %H:%M:%S]")
+formatter = JakartaFormatter(fmt="%(asctime)s %(message)s", datefmt="[%Y-%m-d %H:%M:%S]")
 file_handler.setFormatter(formatter)
 stream_handler.setFormatter(formatter)
 
@@ -149,13 +148,19 @@ failed_addresses = []
 
 def initialize_nonce():
     global current_nonce
-    current_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
+    try:
+        current_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
+        logger.info(f"🔄 Nonce diinisialisasi: {current_nonce}")
+    except Exception as e:
+        logger.error(f"❌ Gagal menginisialisasi nonce: {e}")
+        raise
 
 def get_next_nonce():
     global current_nonce
     with nonce_lock:
         nonce = current_nonce
         current_nonce += 1
+        logger.debug(f"🔢 Menggunakan nonce: {nonce}")
         return nonce
 
 def check_balance():
@@ -280,24 +285,39 @@ def _send_token_with_retry(to_address, amount):
     to_address = web3.Web3.to_checksum_address(to_address)
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
-    gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
-    gas_limit = int(gas_estimate * 1.2)
+    # Cek gas price jaringan
+    network_gas_price = w3.eth.gas_price / 10**9  # Dalam Gwei
+    gas_price_to_use = max(network_gas_price * 1.1, MAX_GAS_PRICE_GWEI)  # 10% lebih tinggi dari jaringan, tapi dibatasi
+    logger.info(f"⛽ Gas price jaringan: {network_gas_price:.2f} Gwei, menggunakan: {gas_price_to_use:.2f} Gwei")
+
+    try:
+        gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
+        gas_limit = int(gas_estimate * 1.2)
+    except Exception as e:
+        logger.error(f"❌ Gagal mengestimasi gas untuk {to_address}: {e}")
+        raise Exception(f"Gagal estimasi gas: {e}")
 
     tx = token_contract.functions.transfer(to_address, scaled_amount).build_transaction({
         'from': from_address,
         'nonce': get_next_nonce(),
         'gas': gas_limit,
-        'gasPrice': w3.to_wei(min(MAX_GAS_PRICE_GWEI, w3.eth.gas_price / 10**9), 'gwei')
+        'gasPrice': w3.to_wei(gas_price_to_use, 'gwei')
     })
 
     signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
     tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-    tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+    logger.info(f"📤 Transaksi dikirim: {tx_hash.hex()}")
 
-    if tx_receipt.status != 1:
-        raise Exception("Status receipt gagal")
-
-    return tx_hash.hex()
+    try:
+        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)  # Timeout 5 menit
+        if tx_receipt.status != 1:
+            logger.error(f"❌ Transaksi {tx_hash.hex()} gagal di chain: Status {tx_receipt.status}")
+            raise Exception(f"Transaksi gagal: Status {tx_receipt.status}")
+        logger.info(f"✅ Transaksi {tx_hash.hex()} dikonfirmasi")
+        return tx_hash.hex()
+    except web3.exceptions.TimeExhausted:
+        logger.error(f"⏰ Transaksi {tx_hash.hex()} tidak dikonfirmasi setelah 300 detik")
+        raise Exception(f"Timeout: Transaksi tidak dikonfirmasi setelah 300 detik")
 
 def send_token_threadsafe(to_address, amount):
     try:
@@ -306,12 +326,12 @@ def send_token_threadsafe(to_address, amount):
         log_transaction(to_address, amount, "SUCCESS", tx_hash)
         with open(SENT_FILE, "a") as f:
             f.write(f"{to_address}\n")
-        return True, amount  # Mengembalikan status dan jumlah token
+        return True, amount
     except Exception as e:
         logger.error(f"❌ Gagal mengirim ke {to_address} setelah retry: {e}")
         log_transaction(to_address, amount, "FAILED", str(e))
         failed_addresses.append((to_address, amount))
-        return False, 0  # Mengembalikan False dan 0 untuk jumlah token
+        return False, 0
     finally:
         delay = random.uniform(0.5, 2.0)
         logger.debug(f"⏱️ Delay adaptif {delay:.2f} detik sebelum lanjut...")
@@ -355,7 +375,6 @@ def send_token_batch(wallets, randomize=False):
         total_wallets_sent += batch_wallets_sent
         logger.info(f"📊 Total wallet berhasil dikirim di batch {i // BATCH_SIZE + 1}: {batch_wallets_sent}/{len(batch)}")
 
-        # Rekap batch
         batch_table = Table(title=f"📋 Rekap Batch {i // BATCH_SIZE + 1}", box=box.SIMPLE)
         batch_table.add_column("Kategori", style="cyan")
         batch_table.add_column("Nilai", justify="right", style="green")
