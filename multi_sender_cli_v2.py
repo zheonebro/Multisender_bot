@@ -57,7 +57,7 @@ logger.setLevel(logging.INFO)
 file_handler = logging.FileHandler(log_path, encoding="utf-8")
 stream_handler = logging.StreamHandler()
 
-formatter = JakartaFormatter(fmt="%(asctime)s %(message)s", datefmt="[%Y-%m-d %H:%M:%S]")
+formatter = JakartaFormatter(fmt="%(asctime)s %(message)s", datefmt="[%Y-%m-%d %H:%M:%S]")
 file_handler.setFormatter(formatter)
 stream_handler.setFormatter(formatter)
 
@@ -147,7 +147,7 @@ nonce_lock = threading.Lock()
 
 failed_addresses = []
 
-# Fungsi Gas Price (tanpa logging ke file)
+# Fungsi Gas Price (tanpa logging kecuali error)
 def get_sepolia_tea_gas_price():
     url = "https://sepolia.tea.xyz/api/v1/gas-price-oracle"
     try:
@@ -155,12 +155,11 @@ def get_sepolia_tea_gas_price():
         response.raise_for_status()
         data = response.json()
         gas_price_gwei = float(data.get("fast", 0)) * 1.2  # Buffer 20%
-        console.log(f"⛽ Gas price dari Sepolia TEA (fast + 20%): {gas_price_gwei:.2f} Gwei")  # Hanya ke console
         return min(gas_price_gwei, MAX_GAS_PRICE_GWEI)
+ตรี
     except requests.RequestException as e:
-        console.log(f"❌ Gagal mengambil gas price dari Sepolia TEA: {e}")  # Hanya ke console
+        logger.error(f"❌ Gagal mengambil gas price dari Sepolia TEA: {e}")
         network_gas_price = w3.eth.gas_price / 10**9 * 1.2  # Buffer 20%
-        console.log(f"⚠️ Fallback ke gas price jaringan + 20%: {network_gas_price:.2f} Gwei")  # Hanya ke console
         return min(network_gas_price, MAX_GAS_PRICE_GWEI)
 
 # Fungsi Pembatalan Transaksi
@@ -178,12 +177,11 @@ def cancel_transaction(tx_hash, nonce):
     logger.info(f"🚫 Membatalkan transaksi {tx_hash} dengan {cancel_hash.hex()}")
     return cancel_hash
 
-# Sinkronisasi Nonce
+# Sinkronisasi Nonce (tanpa logging ke console)
 def initialize_nonce():
     global current_nonce
     try:
         current_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
-        console.log(f"🔄 Nonce diinisialisasi dari jaringan: {current_nonce}")  # Hanya ke console
     except Exception as e:
         logger.error(f"❌ Gagal menginisialisasi nonce: {e}")
         raise
@@ -196,7 +194,6 @@ def get_next_nonce():
             current_nonce = network_nonce
         nonce = current_nonce
         current_nonce += 1
-        logger.debug(f"🔢 Menggunakan nonce: {nonce}")
         return nonce
 
 def check_balance():
@@ -290,7 +287,7 @@ def check_logs():
     logger.info("📜 Menampilkan seluruh log transaksi...")
     display_transaction_logs()
 
-# Fungsi Pengiriman Token (tanpa logging gas ke file)
+# Fungsi Pengiriman Token (tanpa logging gas ke console)
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(3),
     wait=tenacity.wait_exponential(multiplier=2, min=2, max=10),
@@ -304,12 +301,10 @@ def _send_token_with_retry(to_address, amount):
 
     tea_gas_price = get_sepolia_tea_gas_price()
     gas_price_to_use = min(tea_gas_price, MAX_GAS_PRICE_GWEI)
-    console.log(f"⛽ Menggunakan gas price (fast): {gas_price_to_use:.2f} Gwei")  # Hanya ke console
 
     try:
         gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
         gas_limit = int(gas_estimate * 1.2)
-        console.log(f"⛽ Gas estimate: {gas_estimate}, Gas limit: {gas_limit}")  # Hanya ke console
     except Exception as e:
         logger.error(f"❌ Gagal mengestimasi gas untuk {to_address}: {e}")
         raise Exception(f"Gagal estimasi gas: {e}")
@@ -352,7 +347,6 @@ def send_token_threadsafe(to_address, amount):
         return False, 0
     finally:
         delay = random.uniform(0.5, 2.0)
-        logger.debug(f"⏱️ Delay adaptif {delay:.2f} detik sebelum lanjut...")
         time.sleep(delay)
 
 def reset_sent_wallets():
@@ -373,7 +367,6 @@ def send_token_batch(wallets, randomize=False):
     total_wallets_sent = 0
 
     for i in range(0, len(wallets), BATCH_SIZE):
-        console.log("🔄 Menginisialisasi ulang nonce sebelum batch baru...")  # Nonce ke console saja
         initialize_nonce()
         batch = wallets[i:i + BATCH_SIZE]
         logger.info(f"🚀 Memulai batch {i // BATCH_SIZE + 1} dengan {len(batch)} wallet")
