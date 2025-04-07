@@ -18,6 +18,7 @@ import sys
 from rich.progress import Progress
 from rich.table import Table
 from rich.prompt import Prompt, IntPrompt
+import threading  # Untuk timer
 
 # Init
 console = Console()
@@ -294,7 +295,7 @@ def _send_token_with_retry(to_address, amount):
     })
 
     signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)  # Perbaikan: raw_transaction
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
     tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
     if tx_receipt.status != 1:
@@ -387,14 +388,32 @@ def main(randomize=False):
     if not wallets:
         logger.info("🚫 Tidak ada wallet baru untuk dikirim berdasarkan sent_wallets.txt.")
         console.print("[bold yellow]ℹ️ Tidak ada wallet baru untuk dikirim atau semua telah dikirim sebelumnya.[/bold yellow]")
-        return
+        return False
     required_amount = sum([amt for _, amt in wallets])
     balance = check_balance()
     if balance < required_amount:
         logger.error(f"❌ Saldo tidak cukup! Dibutuhkan: {required_amount:.4f}, Tersedia: {balance:.4f}")
-        return
+        return False
     logger.info(f"💰 Jumlah wallet yang akan diproses: {len(wallets)}")
-    send_token_batch(wallets, randomize)
+    success = send_token_batch(wallets, randomize)
+    return success
+
+def ask_schedule_with_timeout():
+    result = [None]  # List untuk menyimpan hasil input dari thread
+
+    def prompt_thread():
+        console.print("[bold yellow]ℹ️ Apakah Anda ingin melanjutkan dengan pengiriman berjadwal setiap hari pukul 08:00 WIB?[/bold yellow]")
+        result[0] = Prompt.ask("Pilih opsi (1=Ya, 0=Tidak)", choices=["0", "1"], default="1")
+
+    # Jalankan prompt dalam thread terpisah
+    thread = threading.Thread(target=prompt_thread)
+    thread.start()
+    thread.join(timeout=10)  # Tunggu maksimum 10 detik
+
+    if result[0] is None:
+        console.print("[bold yellow]⏰ Tidak ada respon dalam 10 detik, default ke pengiriman berjadwal secara acak.[/bold yellow]")
+        return True  # Default ke "Ya"
+    return result[0] == "1"
 
 def run_cli():
     while True:
@@ -412,15 +431,23 @@ def run_cli():
 
         pilihan = Prompt.ask("Pilih opsi", choices=["0", "1", "2", "3", "4", "5", "6"], default="0")
 
-        if pilihan == "1":
-            main(randomize=False)
-        elif pilihan == "2":
-            main(randomize=True)
+        if pilihan in ["1", "2"]:
+            randomize = (pilihan == "2")
+            success = main(randomize=randomize)
+            if success:
+                schedule_choice = ask_schedule_with_timeout()
+                if schedule_choice:
+                    schedule.every().day.at("08:00").do(main, randomize=True)  # Default acak untuk scheduler
+                    logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB (acak)")
+                    while True:
+                        schedule.run_pending()
+                        logger.info("💤 Bot aktif. Menunggu jadwal pengiriman selanjutnya...")
+                        time.sleep(60)
         elif pilihan == "3":
             check_logs()
         elif pilihan == "4":
-            schedule.every().day.at("08:00").do(main, randomize=False)
-            logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB")
+            schedule.every().day.at("08:00").do(main, randomize=True)  # Default acak untuk scheduler
+            logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB (acak)")
             while True:
                 schedule.run_pending()
                 logger.info("💤 Bot aktif. Menunggu jadwal pengiriman selanjutnya...")
@@ -432,7 +459,6 @@ def run_cli():
                 console.print("[bold yellow]ℹ️ Apakah Anda ingin langsung memulai pengiriman token sekarang?[/bold yellow]")
                 lanjut = Prompt.ask("Pilih opsi (1=Ya, 0=Tidak)", choices=["0", "1"], default="0")
                 if lanjut == "1":
-                    # Tampilkan jumlah wallet yang tersedia
                     available_wallets = load_wallets(ignore_sent=True)
                     console.print(f"[bold green]📋 Jumlah wallet yang tersedia untuk dikirim: {len(available_wallets)}[/bold green]")
                     
@@ -440,7 +466,6 @@ def run_cli():
                         console.print("[bold red]❌ Tidak ada wallet valid di wallets.csv untuk diproses. Periksa isi file![/bold red]")
                         continue
                     
-                    # Minta input jumlah wallet yang akan dikirim
                     console.print("[bold yellow]Masukkan jumlah wallet yang akan dikirim token (maksimum sesuai jumlah tersedia):[/bold yellow]")
                     limit = IntPrompt.ask("Jumlah wallet", default=len(available_wallets), min=1, max=len(available_wallets))
                     
@@ -449,11 +474,19 @@ def run_cli():
                     console.print("[2] Acak")
                     mode = Prompt.ask("Pilih mode", choices=["1", "2"], default="1")
                     
-                    # Muat ulang wallet dengan batas yang ditentukan
                     wallets = load_wallets(ignore_sent=True, limit=limit)
                     logger.info(f"📋 Jumlah wallet yang dimuat setelah reset: {len(wallets)}")
                     if wallets:
-                        main(randomize=(mode == "2"))
+                        success = main(randomize=(mode == "2"))
+                        if success:
+                            schedule_choice = ask_schedule_with_timeout()
+                            if schedule_choice:
+                                schedule.every().day.at("08:00").do(main, randomize=True)  # Default acak
+                                logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB (acak)")
+                                while True:
+                                    schedule.run_pending()
+                                    logger.info("💤 Bot aktif. Menunggu jadwal pengiriman selanjutnya...")
+                                    time.sleep(60)
                     else:
                         console.print("[bold red]❌ Tidak ada wallet valid di wallets.csv untuk diproses. Periksa isi file![/bold red]")
         elif pilihan == "0":
