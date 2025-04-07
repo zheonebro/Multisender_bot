@@ -15,7 +15,7 @@ import tenacity
 import schedule
 import pytz
 import sys
-import requests  # Tambahkan library requests untuk memanggil API
+import requests
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 from rich.table import Table
 from rich.prompt import Prompt, IntPrompt
@@ -67,7 +67,7 @@ logger.addHandler(stream_handler)
 console.print("[bold green]🟢 Bot dimulai. Log detail tersedia di runtime.log[/bold green]")
 logger.info("🕒 Logging timezone aktif: Asia/Jakarta")
 
-# Config (tidak diubah)
+# Config (GAS_SPEED dihapus, default ke fast)
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 RAW_SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 RPC_URL = os.getenv("INFURA_URL")
@@ -99,7 +99,7 @@ TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(TOKEN_CONTRACT_RAW)
 CSV_FILE = "wallets.csv"
 SENT_FILE = "sent_wallets.txt"
 
-logger.info(f"⚙️ Konfigurasi: MIN_TOKEN_AMOUNT={MIN_TOKEN_AMOUNT}, MAX_TOKEN_AMOUNT={MAX_TOKEN_AMOUNT}, DAILY_WALLET_LIMIT={DAILY_WALLET_LIMIT}, MAX_THREADS={MAX_THREADS}, BATCH_SIZE={BATCH_SIZE}, IDLE_SECONDS={IDLE_SECONDS}")
+logger.info(f"⚙️ Konfigurasi: MIN_TOKEN_AMOUNT={MIN_TOKEN_AMOUNT}, MAX_TOKEN_AMOUNT={MAX_TOKEN_AMOUNT}, DAILY_WALLET_LIMIT={DAILY_WALLET_LIMIT}, MAX_THREADS={MAX_THREADS}, BATCH_SIZE={BATCH_SIZE}, IDLE_SECONDS={IDLE_SECONDS}, GAS_SPEED=fixed to 'fast'")
 
 # Connect Web3 (tidak diubah)
 w3 = web3.Web3(web3.Web3.HTTPProvider(RPC_URL))
@@ -147,22 +147,20 @@ nonce_lock = threading.Lock()
 
 failed_addresses = []
 
-# Fungsi baru untuk mengambil gas price dari Sepolia TEA Blockscout
+# Fungsi gas price diatur hanya untuk "fast"
 def get_sepolia_tea_gas_price():
     url = "https://sepolia.tea.xyz/api/v1/gas-price-oracle"
     try:
         response = requests.get(url, timeout=5)
         response.raise_for_status()
         data = response.json()
-        # Ambil nilai gas price rata-rata (average) dalam Gwei
-        gas_price_gwei = float(data.get("average", 0))
-        logger.info(f"⛽ Gas price dari Sepolia TEA: {gas_price_gwei:.2f} Gwei")
+        gas_price_gwei = float(data.get("fast", 0))  # Hanya ambil "fast"
+        logger.info(f"⛽ Gas price dari Sepolia TEA (fast): {gas_price_gwei:.2f} Gwei")
         return gas_price_gwei
     except requests.RequestException as e:
         logger.error(f"❌ Gagal mengambil gas price dari Sepolia TEA: {e}")
         return None
 
-# Fungsi sebelumnya (initialize_nonce hingga check_balance) tidak diubah
 def initialize_nonce():
     global current_nonce
     try:
@@ -271,7 +269,7 @@ def check_logs():
     logger.info("📜 Menampilkan seluruh log transaksi...")
     display_transaction_logs()
 
-# Modifikasi _send_token_with_retry untuk menggunakan gas price dari Sepolia TEA
+# Gas fee hanya menggunakan "fast"
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(3),
     wait=tenacity.wait_exponential(multiplier=2, min=2, max=10),
@@ -283,17 +281,18 @@ def _send_token_with_retry(to_address, amount):
     to_address = web3.Web3.to_checksum_address(to_address)
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
-    # Ambil gas price dari Sepolia TEA
+    # Ambil gas price "fast" dari Sepolia TEA
     tea_gas_price = get_sepolia_tea_gas_price()
     if tea_gas_price is not None:
-        gas_price_to_use = min(tea_gas_price * 1.1, MAX_GAS_PRICE_GWEI)  # 10% lebih tinggi, tapi dibatasi oleh MAX_GAS_PRICE_GWEI
+        gas_price_to_use = min(tea_gas_price, MAX_GAS_PRICE_GWEI)
+        if tea_gas_price > MAX_GAS_PRICE_GWEI:
+            logger.warning(f"⚠️ Gas price dari Gas Tracker (fast: {tea_gas_price:.2f} Gwei) melebihi MAX_GAS_PRICE_GWEI ({MAX_GAS_PRICE_GWEI} Gwei), menggunakan batas maksimum.")
     else:
-        # Fallback ke gas price jaringan jika API gagal
-        network_gas_price = w3.eth.gas_price / 10**9  # Dalam Gwei
-        gas_price_to_use = min(network_gas_price * 1.1, MAX_GAS_PRICE_GWEI)
+        network_gas_price = w3.eth.gas_price / 10**9
+        gas_price_to_use = min(network_gas_price, MAX_GAS_PRICE_GWEI)
         logger.warning(f"⚠️ Menggunakan gas price jaringan sebagai fallback: {gas_price_to_use:.2f} Gwei")
 
-    logger.info(f"⛽ Menggunakan gas price: {gas_price_to_use:.2f} Gwei")
+    logger.info(f"⛽ Menggunakan gas price (fast): {gas_price_to_use:.2f} Gwei")
 
     try:
         gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
@@ -475,6 +474,7 @@ def run_cli():
         console.print("\n[bold cyan]=== MENU UTAMA ===[/bold cyan]", style="cyan")
         console.print(f"[bold yellow]Rentang Token Acak per Wallet: {MIN_TOKEN_AMOUNT} - {MAX_TOKEN_AMOUNT}[/bold yellow]")
         console.print(f"[bold yellow]Limit Harian Wallet: {DAILY_WALLET_LIMIT} alamat[/bold yellow]")
+        console.print(f"[bold yellow]Gas Speed: fast (max {MAX_GAS_PRICE_GWEI} Gwei)[/bold yellow]")
         console.print("[1] Jalankan pengiriman token sekarang (berurutan)")
         console.print("[2] Jalankan pengiriman token sekarang (acak)")
         console.print("[3] Tampilkan log transaksi")
