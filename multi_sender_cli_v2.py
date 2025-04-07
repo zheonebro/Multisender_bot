@@ -147,7 +147,7 @@ nonce_lock = threading.Lock()
 
 failed_addresses = []
 
-# Fungsi Gas Price Diperbarui
+# Fungsi Gas Price (tanpa logging ke file)
 def get_sepolia_tea_gas_price():
     url = "https://sepolia.tea.xyz/api/v1/gas-price-oracle"
     try:
@@ -155,12 +155,12 @@ def get_sepolia_tea_gas_price():
         response.raise_for_status()
         data = response.json()
         gas_price_gwei = float(data.get("fast", 0)) * 1.2  # Buffer 20%
-        logger.info(f"⛽ Gas price dari Sepolia TEA (fast + 20%): {gas_price_gwei:.2f} Gwei")
+        console.log(f"⛽ Gas price dari Sepolia TEA (fast + 20%): {gas_price_gwei:.2f} Gwei")  # Hanya ke console
         return min(gas_price_gwei, MAX_GAS_PRICE_GWEI)
     except requests.RequestException as e:
-        logger.error(f"❌ Gagal mengambil gas price dari Sepolia TEA: {e}")
+        console.log(f"❌ Gagal mengambil gas price dari Sepolia TEA: {e}")  # Hanya ke console
         network_gas_price = w3.eth.gas_price / 10**9 * 1.2  # Buffer 20%
-        logger.warning(f"⚠️ Fallback ke gas price jaringan + 20%: {network_gas_price:.2f} Gwei")
+        console.log(f"⚠️ Fallback ke gas price jaringan + 20%: {network_gas_price:.2f} Gwei")  # Hanya ke console
         return min(network_gas_price, MAX_GAS_PRICE_GWEI)
 
 # Fungsi Pembatalan Transaksi
@@ -178,7 +178,7 @@ def cancel_transaction(tx_hash, nonce):
     logger.info(f"🚫 Membatalkan transaksi {tx_hash} dengan {cancel_hash.hex()}")
     return cancel_hash
 
-# Sinkronisasi Nonce Diperbarui
+# Sinkronisasi Nonce
 def initialize_nonce():
     global current_nonce
     try:
@@ -244,7 +244,7 @@ def load_wallets(ignore_sent=False, limit=None):
 
 def log_transaction(to_address, amount, status, tx_hash_or_error):
     with open(transaction_log_path, "a", encoding="utf-8") as f:
-        timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-% signage%d %H:%M:%S")
         f.write(f"{timestamp},{to_address},{amount},{status},{tx_hash_or_error}\n")
 
 def display_transaction_logs():
@@ -290,7 +290,7 @@ def check_logs():
     logger.info("📜 Menampilkan seluruh log transaksi...")
     display_transaction_logs()
 
-# Fungsi Pengiriman Token Diperbaiki
+# Fungsi Pengiriman Token Diperbarui (tanpa logging gas ke file)
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(3),
     wait=tenacity.wait_exponential(multiplier=2, min=2, max=10),
@@ -303,13 +303,13 @@ def _send_token_with_retry(to_address, amount):
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
     tea_gas_price = get_sepolia_tea_gas_price()
-    gas_price_to_use = min(tea_gas_price, MAX_GAS_PRICE_GWEI)  # Typo diperbaiki
-    logger.info(f"⛽ Menggunakan gas price (fast): {gas_price_to_use:.2f} Gwei")
+    gas_price_to_use = min(tea_gas_price, MAX_GAS_PRICE_GWEI)
+    console.log(f"⛽ Menggunakan gas price (fast): {gas_price_to_use:.2f} Gwei")  # Hanya ke console
 
     try:
         gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
         gas_limit = int(gas_estimate * 1.2)
-        logger.info(f"⛽ Gas estimate: {gas_estimate}, Gas limit: {gas_limit}")
+        console.log(f"⛽ Gas estimate: {gas_estimate}, Gas limit: {gas_limit}")  # Hanya ke console
     except Exception as e:
         logger.error(f"❌ Gagal mengestimasi gas untuk {to_address}: {e}")
         raise Exception(f"Gagal estimasi gas: {e}")
@@ -326,7 +326,7 @@ def _send_token_with_retry(to_address, amount):
     logger.info(f"📤 Transaksi dikirim: {tx_hash.hex()}")
 
     try:
-        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=600)  # Diperpanjang ke 10 menit
+        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=600)
         if tx_receipt.status != 1:
             logger.error(f"❌ Transaksi {tx_hash.hex()} gagal di chain: Status {tx_receipt.status}")
             raise Exception(f"Transaksi gagal: Status {tx_receipt.status}")
