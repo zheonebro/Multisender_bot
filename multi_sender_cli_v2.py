@@ -24,7 +24,7 @@ from rich.prompt import Prompt, IntPrompt
 console = Console()
 load_dotenv()
 
-# Banner dan setup logging (tidak diubah)
+# Banner dan setup logging
 BANNER = """
 ███████╗██████╗  ██████╗  ██████╗ ██████╗  ██████╗ ███╗   ██╗
 ██╔════╝██╔══██╗██╔═══██╗██╔════╝ ██╔══██╗██╔═══██╗████╗  ██║
@@ -67,12 +67,12 @@ logger.addHandler(stream_handler)
 console.print("[bold green]🟢 Bot dimulai. Log detail tersedia di runtime.log[/bold green]")
 logger.info("🕒 Logging timezone aktif: Asia/Jakarta")
 
-# Config (GAS_SPEED dihapus, default ke fast)
+# Config
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 RAW_SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_RAW = os.getenv("TOKEN_CONTRACT")
-MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "50"))
+MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "100"))  # Diperbarui ke 100 Gwei
 EXPLORER_URL = "https://sepolia.tea.xyz/tx/"
 
 MAX_THREADS = int(os.getenv("MAX_THREADS", 5))
@@ -99,16 +99,16 @@ TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(TOKEN_CONTRACT_RAW)
 CSV_FILE = "wallets.csv"
 SENT_FILE = "sent_wallets.txt"
 
-logger.info(f"⚙️ Konfigurasi: MIN_TOKEN_AMOUNT={MIN_TOKEN_AMOUNT}, MAX_TOKEN_AMOUNT={MAX_TOKEN_AMOUNT}, DAILY_WALLET_LIMIT={DAILY_WALLET_LIMIT}, MAX_THREADS={MAX_THREADS}, BATCH_SIZE={BATCH_SIZE}, IDLE_SECONDS={IDLE_SECONDS}, GAS_SPEED=fixed to 'fast'")
+logger.info(f"⚙️ Konfigurasi: MIN_TOKEN_AMOUNT={MIN_TOKEN_AMOUNT}, MAX_TOKEN_AMOUNT={MAX_TOKEN_AMOUNT}, DAILY_WALLET_LIMIT={DAILY_WALLET_LIMIT}, MAX_THREADS={MAX_THREADS}, BATCH_SIZE={BATCH_SIZE}, IDLE_SECONDS={IDLE_SECONDS}, MAX_GAS_PRICE_GWEI={MAX_GAS_PRICE_GWEI}")
 
-# Connect Web3 (tidak diubah)
+# Connect Web3
 w3 = web3.Web3(web3.Web3.HTTPProvider(RPC_URL))
 if not w3.is_connected():
     logger.error("❌ Gagal terhubung ke jaringan! Cek RPC URL")
     console.print("[bold red]❌ Gagal terhubung ke jaringan. Periksa RPC URL di .env.[/bold red]")
     exit()
 
-# Token Contract Setup (tidak diubah)
+# Token Contract Setup
 TOKEN_ABI = [
     {
         "constant": False,
@@ -139,7 +139,7 @@ TOKEN_ABI = [
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=TOKEN_ABI)
 TOKEN_DECIMALS = token_contract.functions.decimals().call()
 
-# Global Rate Limiting State (tidak diubah)
+# Global Rate Limiting State
 rate_limit_lock = threading.Lock()
 last_sent_time = 0
 current_nonce = None
@@ -147,25 +147,43 @@ nonce_lock = threading.Lock()
 
 failed_addresses = []
 
-# Fungsi gas price diatur hanya untuk "fast"
+# Fungsi Gas Price Diperbarui
 def get_sepolia_tea_gas_price():
     url = "https://sepolia.tea.xyz/api/v1/gas-price-oracle"
     try:
         response = requests.get(url, timeout=5)
         response.raise_for_status()
         data = response.json()
-        gas_price_gwei = float(data.get("fast", 0))  # Hanya ambil "fast"
-        logger.info(f"⛽ Gas price dari Sepolia TEA (fast): {gas_price_gwei:.2f} Gwei")
-        return gas_price_gwei
+        gas_price_gwei = float(data.get("fast", 0)) * 1.2  # Buffer 20%
+        logger.info(f"⛽ Gas price dari Sepolia TEA (fast + 20%): {gas_price_gwei:.2f} Gwei")
+        return min(gas_price_gwei, MAX_GAS_PRICE_GWEI)
     except requests.RequestException as e:
         logger.error(f"❌ Gagal mengambil gas price dari Sepolia TEA: {e}")
-        return None
+        network_gas_price = w3.eth.gas_price / 10**9 * 1.2  # Buffer 20%
+        logger.warning(f"⚠️ Fallback ke gas price jaringan + 20%: {network_gas_price:.2f} Gwei")
+        return min(network_gas_price, MAX_GAS_PRICE_GWEI)
 
+# Fungsi Pembatalan Transaksi
+def cancel_transaction(tx_hash, nonce):
+    cancel_tx = {
+        'from': SENDER_ADDRESS,
+        'to': SENDER_ADDRESS,
+        'value': 0,
+        'nonce': nonce,
+        'gas': 21000,
+        'gasPrice': w3.to_wei(get_sepolia_tea_gas_price() * 1.5, 'gwei')  # Gas lebih tinggi
+    }
+    signed_cancel_tx = w3.eth.account.sign_transaction(cancel_tx, PRIVATE_KEY)
+    cancel_hash = w3.eth.send_raw_transaction(signed_cancel_tx.raw_transaction)
+    logger.info(f"🚫 Membatalkan transaksi {tx_hash} dengan {cancel_hash.hex()}")
+    return cancel_hash
+
+# Sinkronisasi Nonce Diperbarui
 def initialize_nonce():
     global current_nonce
     try:
         current_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
-        logger.info(f"🔄 Nonce diinisialisasi: {current_nonce}")
+        logger.info(f"🔄 Nonce diinisialisasi dari jaringan: {current_nonce}")
     except Exception as e:
         logger.error(f"❌ Gagal menginisialisasi nonce: {e}")
         raise
@@ -173,6 +191,9 @@ def initialize_nonce():
 def get_next_nonce():
     global current_nonce
     with nonce_lock:
+        network_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
+        if network_nonce > current_nonce:
+            current_nonce = network_nonce
         nonce = current_nonce
         current_nonce += 1
         logger.debug(f"🔢 Menggunakan nonce: {nonce}")
@@ -269,7 +290,7 @@ def check_logs():
     logger.info("📜 Menampilkan seluruh log transaksi...")
     display_transaction_logs()
 
-# Gas fee hanya menggunakan "fast"
+# Fungsi Pengiriman Token Diperbarui
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(3),
     wait=tenacity.wait_exponential(multiplier=2, min=2, max=10),
@@ -281,22 +302,14 @@ def _send_token_with_retry(to_address, amount):
     to_address = web3.Web3.to_checksum_address(to_address)
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
-    # Ambil gas price "fast" dari Sepolia TEA
     tea_gas_price = get_sepolia_tea_gas_price()
-    if tea_gas_price is not None:
-        gas_price_to_use = min(tea_gas_price, MAX_GAS_PRICE_GWEI)
-        if tea_gas_price > MAX_GAS_PRICE_GWEI:
-            logger.warning(f"⚠️ Gas price dari Gas Tracker (fast: {tea_gas_price:.2f} Gwei) melebihi MAX_GAS_PRICE_GWEI ({MAX_GAS_PRICE_GWEI} Gwei), menggunakan batas maksimum.")
-    else:
-        network_gas_price = w3.eth.gas_price / 10**9
-        gas_price_to_use = min(network_gas_price, MAX_GAS_PRICE_GWEI)
-        logger.warning(f"⚠️ Menggunakan gas price jaringan sebagai fallback: {gas_price_to_use:.2f} Gwei")
-
+    gas_price_to_use = min(tea_gas Daughterprice, MAX_GAS_PRICE_GWEI)
     logger.info(f"⛽ Menggunakan gas price (fast): {gas_price_to_use:.2f} Gwei")
 
     try:
         gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
         gas_limit = int(gas_estimate * 1.2)
+        logger.info(f"⛽ Gas estimate: {gas_estimate}, Gas limit: {gas_limit}")
     except Exception as e:
         logger.error(f"❌ Gagal mengestimasi gas untuk {to_address}: {e}")
         raise Exception(f"Gagal estimasi gas: {e}")
@@ -313,15 +326,16 @@ def _send_token_with_retry(to_address, amount):
     logger.info(f"📤 Transaksi dikirim: {tx_hash.hex()}")
 
     try:
-        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
+        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=600)  # Diperpanjang ke 10 menit
         if tx_receipt.status != 1:
             logger.error(f"❌ Transaksi {tx_hash.hex()} gagal di chain: Status {tx_receipt.status}")
             raise Exception(f"Transaksi gagal: Status {tx_receipt.status}")
         logger.info(f"✅ Transaksi {tx_hash.hex()} dikonfirmasi")
         return tx_hash.hex()
     except web3.exceptions.TimeExhausted:
-        logger.error(f"⏰ Transaksi {tx_hash.hex()} tidak dikonfirmasi setelah 300 detik")
-        raise Exception(f"Timeout: Transaksi tidak dikonfirmasi setelah 300 detik")
+        logger.error(f"⏰ Transaksi {tx_hash.hex()} tidak dikonfirmasi setelah 600 detik")
+        cancel_hash = cancel_transaction(tx_hash.hex(), tx['nonce'])
+        raise Exception(f"Timeout: Dibatalkan dengan {cancel_hash.hex()}")
 
 def send_token_threadsafe(to_address, amount):
     try:
