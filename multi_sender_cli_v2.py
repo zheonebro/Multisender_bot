@@ -208,17 +208,19 @@ def display_runtime_logs():
         console.print("📜 Belum ada log runtime yang dicatat.", style="yellow")
         return
 
-    table = Table(title="📜 LOG RUNTIME (SELURUH DATA)", box=box.SIMPLE_HEAVY)
+    table = Table(title="📜 LOG RUNTIME (50 BARIS TERAKHIR)", box=box.SIMPLE_HEAVY)
     table.add_column("No", justify="center", style="dim")
     table.add_column("Waktu", style="dim", width=20)
     table.add_column("Pesan", style="white")
 
     with open(log_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
-        for idx, line in enumerate(lines, 1):
+        # Ambil 50 baris terakhir saja
+        recent_lines = lines[-50:] if len(lines) > 50 else lines
+        for idx, line in enumerate(recent_lines, 1):
             if line.strip():
                 timestamp, message = line.strip().split(" ", 1)
-                table.add_row(str(idx), timestamp[1:-1], message)  # Hilangkan tanda kurung []
+                table.add_row(str(idx), timestamp[1:-1], message)
 
     console.print(table)
 
@@ -426,7 +428,7 @@ def run_cli():
                     console.print("[1] Berurutan")
                     console.print("[2] Acak")
                     mode = Prompt.ask("Pilih mode", choices=["1", "2"], default="1")
-                    wallets = load_wallets(ignore_sent=True)  # Abaikan sent_wallets.txt setelah reset
+                    wallets = load_wallets(ignore_sent=True)
                     logger.info(f"📋 Jumlah wallet yang dimuat setelah reset: {len(wallets)}")
                     if wallets:
                         main(randomize=(mode == "2"))
