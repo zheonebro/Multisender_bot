@@ -166,11 +166,11 @@ def check_balance():
     logger.info(f"💰 Saldo token pengirim: {balance_in_tokens:.4f}")
     return balance_in_tokens
 
-def load_wallets():
+def load_wallets(ignore_sent=False):
     wallets = []
     sent_set = set()
     try:
-        if os.path.exists(SENT_FILE):
+        if not ignore_sent and os.path.exists(SENT_FILE):
             with open(SENT_FILE, "r") as f:
                 sent_set = set(line.strip().lower() for line in f.readlines())
         with open(CSV_FILE, "r") as f:
@@ -190,7 +190,7 @@ def load_wallets():
                     if amount_float > MAX_TOKEN_AMOUNT:
                         logger.warning(f"⚠️ Jumlah {amount_float} untuk {address} melebihi maksimum ({MAX_TOKEN_AMOUNT}), dilewati.")
                         continue
-                    if address.lower() not in sent_set:
+                    if ignore_sent or address.lower() not in sent_set:
                         wallets.append((address, amount_float))
                 except ValueError:
                     logger.warning(f"⚠️ Jumlah tidak valid untuk alamat {address}: {amount}, dilewati.")
@@ -202,6 +202,25 @@ def log_transaction(to_address, amount, status, tx_hash_or_error):
     with open(transaction_log_path, "a", encoding="utf-8") as f:
         timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"{timestamp},{to_address},{amount},{status},{tx_hash_or_error}\n")
+
+def display_runtime_logs():
+    if not os.path.exists(log_path):
+        console.print("📜 Belum ada log runtime yang dicatat.", style="yellow")
+        return
+
+    table = Table(title="📜 LOG RUNTIME (SELURUH DATA)", box=box.SIMPLE_HEAVY)
+    table.add_column("No", justify="center", style="dim")
+    table.add_column("Waktu", style="dim", width=20)
+    table.add_column("Pesan", style="white")
+
+    with open(log_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+        for idx, line in enumerate(lines, 1):
+            if line.strip():
+                timestamp, message = line.strip().split(" ", 1)
+                table.add_row(str(idx), timestamp[1:-1], message)  # Hilangkan tanda kurung []
+
+    console.print(table)
 
 def display_transaction_logs():
     if not os.path.exists(transaction_log_path):
@@ -305,7 +324,7 @@ def reset_sent_wallets():
 
 def send_token_batch(wallets, randomize=False):
     if randomize:
-        random.shuffle(wallets)  # Acak daftar wallet
+        random.shuffle(wallets)
         logger.info("🔀 Daftar wallet diacak untuk pengiriman acak.")
     total_sent = 0.0
     for i in range(0, len(wallets), BATCH_SIZE):
@@ -335,12 +354,14 @@ def send_token_batch(wallets, randomize=False):
                 if pilihan == "1":
                     if reset_sent_wallets():
                         logger.info("🔄 Memulai ulang pengiriman setelah reset manual...")
-                        return send_token_batch(load_wallets(), randomize)  # Reload dan lanjutkan dengan mode yang sama
+                        new_wallets = load_wallets(ignore_sent=True)
+                        logger.info(f"📋 Jumlah wallet yang dimuat setelah reset: {len(new_wallets)}")
+                        return send_token_batch(new_wallets, randomize)
                 else:
                     logger.info("⏳ Menunggu jadwal reset otomatis besok pukul 08:00 WIB.")
-                    return False  # Hentikan proses
+                    return False
     logger.info("✅ Pengiriman batch selesai tanpa mencapai limit harian.")
-    return True  # Proses selesai tanpa mencapai limit
+    return True
 
 def retry_failed_addresses():
     global failed_addresses
@@ -352,10 +373,10 @@ def retry_failed_addresses():
 
 def main(randomize=False):
     logger.info("🟢 Fungsi `main()` dijalankan dari scheduler atau manual.")
-    wallets = load_wallets()
+    wallets = load_wallets(ignore_sent=False)
     if not wallets:
-        logger.info("🚫 Tidak ada wallet baru untuk dikirim.")
-        console.print("[bold yellow]ℹ️ Tidak ada wallet baru untuk dikirim atau semua telah mencapai limit harian.[/bold yellow]")
+        logger.info("🚫 Tidak ada wallet baru untuk dikirim berdasarkan sent_wallets.txt.")
+        console.print("[bold yellow]ℹ️ Tidak ada wallet baru untuk dikirim atau semua telah dikirim sebelumnya.[/bold yellow]")
         return
     required_amount = sum([amt for _, amt in wallets])
     balance = check_balance()
@@ -367,6 +388,7 @@ def main(randomize=False):
 
 def run_cli():
     while True:
+        display_runtime_logs()  # Tampilkan log runtime otomatis
         console.print("\n[bold cyan]=== MENU UTAMA ===[/bold cyan]", style="cyan")
         console.print(f"[bold yellow]Batas Token per Wallet: {MIN_TOKEN_AMOUNT} - {MAX_TOKEN_AMOUNT}[/bold yellow]")
         console.print(f"[bold yellow]Limit Harian: {DAILY_LIMIT} token[/bold yellow]")
@@ -387,7 +409,7 @@ def run_cli():
         elif pilihan == "3":
             check_logs()
         elif pilihan == "4":
-            schedule.every().day.at("08:00").do(main, randomize=False)  # Default berurutan di scheduler
+            schedule.every().day.at("08:00").do(main, randomize=False)
             logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB")
             while True:
                 schedule.run_pending()
@@ -404,7 +426,12 @@ def run_cli():
                     console.print("[1] Berurutan")
                     console.print("[2] Acak")
                     mode = Prompt.ask("Pilih mode", choices=["1", "2"], default="1")
-                    main(randomize=(mode == "2"))
+                    wallets = load_wallets(ignore_sent=True)  # Abaikan sent_wallets.txt setelah reset
+                    logger.info(f"📋 Jumlah wallet yang dimuat setelah reset: {len(wallets)}")
+                    if wallets:
+                        main(randomize=(mode == "2"))
+                    else:
+                        console.print("[bold red]❌ Tidak ada wallet valid di wallets.csv untuk diproses.[/bold red]")
         elif pilihan == "0":
             console.print("👋 Keluar dari program.", style="bold red")
             break
