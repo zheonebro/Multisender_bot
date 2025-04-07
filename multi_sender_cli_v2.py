@@ -125,6 +125,13 @@ TOKEN_ABI = [
         "name": "decimals",
         "outputs": [{"name": "", "type": "uint8"}],
         "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [{"name": "_owner", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "balance", "type": "uint256"}],
+        "type": "function"
     }
 ]
 
@@ -150,20 +157,35 @@ def get_next_nonce():
         current_nonce += 1
         return nonce
 
+def check_balance():
+    balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
+    balance_in_tokens = balance / (10 ** TOKEN_DECIMALS)
+    logger.info(f"💰 Saldo token pengirim: {balance_in_tokens:.4f}")
+    return balance_in_tokens
+
 def load_wallets():
     wallets = []
     sent_set = set()
-    if os.path.exists(SENT_FILE):
-        with open(SENT_FILE, "r") as f:
-            sent_set = set(line.strip().lower() for line in f.readlines())
-    with open(CSV_FILE, "r") as f:
-        reader = csv.reader(f)
-        for row in reader:
-            if len(row) < 2:
-                continue
-            address, amount = row[0].strip(), row[1].strip()
-            if address.lower() not in sent_set:
-                wallets.append((address, float(amount)))
+    try:
+        if os.path.exists(SENT_FILE):
+            with open(SENT_FILE, "r") as f:
+                sent_set = set(line.strip().lower() for line in f.readlines())
+        with open(CSV_FILE, "r") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) < 2:
+                    continue
+                address, amount = row[0].strip(), row[1].strip()
+                if not w3.is_address(address):
+                    logger.warning(f"⚠️ Alamat tidak valid: {address}, dilewati.")
+                    continue
+                if address.lower() not in sent_set:
+                    try:
+                        wallets.append((address, float(amount)))
+                    except ValueError:
+                        logger.warning(f"⚠️ Jumlah tidak valid untuk alamat {address}: {amount}, dilewati.")
+    except Exception as e:
+        logger.error(f"❌ Gagal membaca file wallet: {e}")
     return wallets
 
 def log_transaction(to_address, amount, status, tx_hash_or_error):
@@ -228,7 +250,7 @@ def _send_token_with_retry(to_address, amount):
         'from': from_address,
         'nonce': get_next_nonce(),
         'gas': 100_000,
-        'gasPrice': w3.to_wei(min(MAX_GAS_PRICE_GWEI, w3.eth.gas_price // 10**9), 'gwei')
+        'gasPrice': w3.to_wei(min(MAX_GAS_PRICE_GWEI, w3.eth.gas_price / 10**9), 'gwei')  # Dinamis dengan batas
     })
 
     signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
@@ -258,6 +280,8 @@ def send_token_threadsafe(to_address, amount):
 def send_token_batch(wallets):
     total_sent = 0.0
     for i in range(0, len(wallets), BATCH_SIZE):
+        logger.info("🔄 Menginisialisasi ulang nonce sebelum batch baru...")
+        initialize_nonce()  # Inisialisasi ulang nonce
         batch = wallets[i:i + BATCH_SIZE]
         logger.info(f"🚀 Memproses batch {i // BATCH_SIZE + 1} ({len(batch)} wallet)...")
         with Progress() as progress:
@@ -275,13 +299,25 @@ def send_token_batch(wallets):
                 logger.warning(f"🚘 Mencapai batas harian {DAILY_LIMIT}, berhenti sementara.")
                 break
 
+def retry_failed_addresses():
+    global failed_addresses
+    if not failed_addresses:
+        logger.info("✅ Tidak ada alamat yang gagal untuk dicoba ulang.")
+        return
+    logger.info(f"🔄 Mencoba ulang {len(failed_addresses)} alamat yang gagal...")
+    send_token_batch(failed_addresses)
+    failed_addresses = []  # Reset setelah dicoba ulang
+
 def main():
     logger.info("🟢 Fungsi `main()` dijalankan dari scheduler atau manual.")
-    logger.info("🔄 Inisialisasi nonce awal...")
-    initialize_nonce()
     wallets = load_wallets()
     if not wallets:
         logger.info("🚫 Tidak ada wallet baru untuk dikirim.")
+        return
+    required_amount = sum([amt for _, amt in wallets])
+    balance = check_balance()
+    if balance < required_amount:
+        logger.error(f"❌ Saldo tidak cukup! Dibutuhkan: {required_amount:.4f}, Tersedia: {balance:.4f}")
         return
     logger.info(f"💰 Jumlah wallet yang akan diproses: {len(wallets)}")
     send_token_batch(wallets)
@@ -292,9 +328,10 @@ def run_cli():
         console.print("[1] Jalankan pengiriman token sekarang")
         console.print("[2] Tampilkan log transaksi")
         console.print("[3] Jalankan mode penjadwalan (scheduler)")
+        console.print("[4] Coba ulang alamat yang gagal")
         console.print("[0] Keluar")
 
-        pilihan = Prompt.ask("Pilih opsi", choices=["0", "1", "2", "3"], default="0")
+        pilihan = Prompt.ask("Pilih opsi", choices=["0", "1", "2", "3", "4"], default="0")
 
         if pilihan == "1":
             main()
@@ -307,6 +344,8 @@ def run_cli():
                 schedule.run_pending()
                 logger.info("💤 Bot aktif. Menunggu jadwal pengiriman selanjutnya...")
                 time.sleep(60)
+        elif pilihan == "4":
+            retry_failed_addresses()
         elif pilihan == "0":
             console.print("👋 Keluar dari program.", style="bold red")
             break
