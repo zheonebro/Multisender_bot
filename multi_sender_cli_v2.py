@@ -56,6 +56,7 @@ logger.setLevel(logging.INFO)
 
 file_handler = logging.FileHandler(log_path, encoding="utf-8")
 stream_handler = logging.StreamHandler()
+stream_handler.setLevel(logging.WARNING)  # Hanya tampilkan warning/error di console
 
 formatter = JakartaFormatter(fmt="%(asctime)s %(message)s", datefmt="[%Y-%m-%d %H:%M:%S]")
 file_handler.setFormatter(formatter)
@@ -156,7 +157,6 @@ def get_sepolia_tea_gas_price():
         data = response.json()
         gas_price_gwei = float(data.get("fast", 0)) * 1.2  # Buffer 20%
         return min(gas_price_gwei, MAX_GAS_PRICE_GWEI)
-        
     except requests.RequestException as e:
         logger.error(f"❌ Gagal mengambil gas price dari Sepolia TEA: {e}")
         network_gas_price = w3.eth.gas_price / 10**9 * 1.2  # Buffer 20%
@@ -287,7 +287,7 @@ def check_logs():
     logger.info("📜 Menampilkan seluruh log transaksi...")
     display_transaction_logs()
 
-# Fungsi Pengiriman Token (tanpa logging gas ke console)
+# Fungsi Pengiriman Token (tanpa logging ke console)
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(3),
     wait=tenacity.wait_exponential(multiplier=2, min=2, max=10),
@@ -359,7 +359,7 @@ def reset_sent_wallets():
         logger.error(f"❌ Gagal mereset sent_wallets.txt: {e}")
         return False
 
-# Fungsi Batch Diperbarui untuk Hanya Log Token
+# Fungsi Batch Diperbarui untuk Output Console Rapi
 def send_token_batch(wallets, randomize=False):
     if randomize:
         random.shuffle(wallets)
@@ -369,12 +369,18 @@ def send_token_batch(wallets, randomize=False):
     for i in range(0, len(wallets), BATCH_SIZE):
         initialize_nonce()
         batch = wallets[i:i + BATCH_SIZE]
+        console.print(f"Memproses batch {i // BATCH_SIZE + 1} ({len(batch)} wallet)...")
         logger.info(f"🚀 Memulai batch {i // BATCH_SIZE + 1} dengan {len(batch)} wallet")
         batch_wallets_sent = 0
         batch_total_token = 0.0
 
-        with Progress() as progress:
-            task = progress.add_task("Mengirim token...", total=len(batch))
+        with Progress(
+            TextColumn("[bold green]Mengirim token..."),
+            BarColumn(),
+            TextColumn("{task.percentage:>3.0f}%"),
+            TimeRemainingColumn(),
+        ) as progress:
+            task = progress.add_task("", total=len(batch))
             with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
                 futures = [executor.submit(send_token_threadsafe, addr, amt) for addr, amt in batch]
                 for future in as_completed(futures):
@@ -402,6 +408,7 @@ def send_token_batch(wallets, randomize=False):
             console.print(f"[bold green]📦 Total wallet berhasil dikirim: {total_wallets_sent}[/bold green]")
             return False
 
+        console.print(f"⏳ Menunggu {IDLE_SECONDS} detik sebelum batch berikutnya...")
         logger.info(f"⏳ Menunggu {IDLE_SECONDS} detik sebelum batch berikutnya...")
         time.sleep(IDLE_SECONDS)
     
