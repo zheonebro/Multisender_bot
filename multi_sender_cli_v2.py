@@ -201,12 +201,12 @@ def load_wallets(ignore_sent=False):
 
 def log_transaction(to_address, amount, status, tx_hash_or_error):
     with open(transaction_log_path, "a", encoding="utf-8") as f:
-        timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-%m-d %H:%M:%S")
         f.write(f"{timestamp},{to_address},{amount},{status},{tx_hash_or_error}\n")
 
 def display_runtime_logs():
     if not os.path.exists(log_path):
- HEAVY        console.print("📜 Belum ada log runtime yang dicatat.", style="yellow")
+        console.print("📜 Belum ada log runtime yang dicatat.", style="yellow")
         return
 
     table = Table(title="📜 LOG RUNTIME (50 BARIS TERAKHIR)", box=box.SIMPLE_HEAVY)
