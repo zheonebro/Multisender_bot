@@ -257,7 +257,6 @@ def _send_token_with_retry(to_address, amount):
     to_address = web3.Web3.to_checksum_address(to_address)
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
-    # Estimasi gas secara dinamis
     gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
     gas_limit = int(gas_estimate * 1.2)  # Tambah 20% buffer
 
@@ -298,11 +297,16 @@ def reset_sent_wallets():
             f.write("")  # Kosongkan file
         logger.info("🔄 File sent_wallets.txt telah direset.")
         console.print("[bold green]✅ Reset limit harian berhasil! Anda bisa memulai pengiriman ulang.[/bold green]")
+        return True
     except Exception as e:
         logger.error(f"❌ Gagal mereset sent_wallets.txt: {e}")
         console.print("[bold red]❌ Gagal mereset limit harian.[/bold red]")
+        return False
 
-def send_token_batch(wallets):
+def send_token_batch(wallets, randomize=False):
+    if randomize:
+        random.shuffle(wallets)  # Acak daftar wallet
+        logger.info("🔀 Daftar wallet diacak untuk pengiriman acak.")
     total_sent = 0.0
     for i in range(0, len(wallets), BATCH_SIZE):
         logger.info("🔄 Menginisialisasi ulang nonce sebelum batch baru...")
@@ -320,6 +324,7 @@ def send_token_batch(wallets):
 
         if DAILY_LIMIT > 0:
             total_sent += sum([amt for _, amt in batch])
+            logger.info(f"📊 Total token terkirim sejauh ini: {total_sent:.4f}/{DAILY_LIMIT}")
             if total_sent >= DAILY_LIMIT:
                 logger.warning(f"🚘 Mencapai batas harian {DAILY_LIMIT}, berhenti sementara.")
                 console.print(f"[bold red]ℹ️ Limit harian tercapai: {total_sent:.4f}/{DAILY_LIMIT} token telah dikirim hari ini.[/bold red]")
@@ -328,12 +333,13 @@ def send_token_batch(wallets):
                 console.print("[2] Tunggu jadwal reset otomatis besok pukul 08:00 WIB")
                 pilihan = Prompt.ask("Pilih opsi", choices=["1", "2"], default="2")
                 if pilihan == "1":
-                    reset_sent_wallets()
-                    logger.info("🔄 Memulai ulang pengiriman setelah reset manual...")
-                    return send_token_batch(wallets)  # Rekursif untuk melanjutkan
+                    if reset_sent_wallets():
+                        logger.info("🔄 Memulai ulang pengiriman setelah reset manual...")
+                        return send_token_batch(load_wallets(), randomize)  # Reload dan lanjutkan dengan mode yang sama
                 else:
                     logger.info("⏳ Menunggu jadwal reset otomatis besok pukul 08:00 WIB.")
                     return False  # Hentikan proses
+    logger.info("✅ Pengiriman batch selesai tanpa mencapai limit harian.")
     return True  # Proses selesai tanpa mencapai limit
 
 def retry_failed_addresses():
@@ -343,9 +349,8 @@ def retry_failed_addresses():
         return
     logger.info(f"🔄 Mencoba ulang {len(failed_addresses)} alamat yang gagal...")
     send_token_batch(failed_addresses)
-    failed_addresses = []
 
-def main():
+def main(randomize=False):
     logger.info("🟢 Fungsi `main()` dijalankan dari scheduler atau manual.")
     wallets = load_wallets()
     if not wallets:
@@ -358,36 +363,48 @@ def main():
         logger.error(f"❌ Saldo tidak cukup! Dibutuhkan: {required_amount:.4f}, Tersedia: {balance:.4f}")
         return
     logger.info(f"💰 Jumlah wallet yang akan diproses: {len(wallets)}")
-    send_token_batch(wallets)
+    send_token_batch(wallets, randomize)
 
 def run_cli():
     while True:
         console.print("\n[bold cyan]=== MENU UTAMA ===[/bold cyan]", style="cyan")
         console.print(f"[bold yellow]Batas Token per Wallet: {MIN_TOKEN_AMOUNT} - {MAX_TOKEN_AMOUNT}[/bold yellow]")
-        console.print("[1] Jalankan pengiriman token sekarang")
-        console.print("[2] Tampilkan log transaksi")
-        console.print("[3] Jalankan mode penjadwalan (scheduler)")
-        console.print("[4] Coba ulang alamat yang gagal")
-        console.print("[5] Reset limit harian (kosongkan sent_wallets.txt)")  # Opsi baru
+        console.print(f"[bold yellow]Limit Harian: {DAILY_LIMIT} token[/bold yellow]")
+        console.print("[1] Jalankan pengiriman token sekarang (berurutan)")
+        console.print("[2] Jalankan pengiriman token sekarang (acak)")
+        console.print("[3] Tampilkan log transaksi")
+        console.print("[4] Jalankan mode penjadwalan (scheduler)")
+        console.print("[5] Coba ulang alamat yang gagal")
+        console.print("[6] Reset limit harian (kosongkan sent_wallets.txt)")
         console.print("[0] Keluar")
 
-        pilihan = Prompt.ask("Pilih opsi", choices=["0", "1", "2", "3", "4", "5"], default="0")
+        pilihan = Prompt.ask("Pilih opsi", choices=["0", "1", "2", "3", "4", "5", "6"], default="0")
 
         if pilihan == "1":
-            main()
+            main(randomize=False)
         elif pilihan == "2":
-            check_logs()
+            main(randomize=True)
         elif pilihan == "3":
-            schedule.every().day.at("08:00").do(main)
+            check_logs()
+        elif pilihan == "4":
+            schedule.every().day.at("08:00").do(main, randomize=False)  # Default berurutan di scheduler
             logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB")
             while True:
                 schedule.run_pending()
                 logger.info("💤 Bot aktif. Menunggu jadwal pengiriman selanjutnya...")
                 time.sleep(60)
-        elif pilihan == "4":
-            retry_failed_addresses()
         elif pilihan == "5":
-            reset_sent_wallets()
+            retry_failed_addresses()
+        elif pilihan == "6":
+            if reset_sent_wallets():
+                console.print("[bold yellow]ℹ️ Apakah Anda ingin langsung memulai pengiriman token sekarang?[/bold yellow]")
+                lanjut = Prompt.ask("Pilih opsi (1=Ya, 0=Tidak)", choices=["0", "1"], default="0")
+                if lanjut == "1":
+                    console.print("[bold yellow]Pilih mode pengiriman:[/bold yellow]")
+                    console.print("[1] Berurutan")
+                    console.print("[2] Acak")
+                    mode = Prompt.ask("Pilih mode", choices=["1", "2"], default="1")
+                    main(randomize=(mode == "2"))
         elif pilihan == "0":
             console.print("👋 Keluar dari program.", style="bold red")
             break
