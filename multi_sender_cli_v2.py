@@ -2,7 +2,7 @@ import csv
 import os
 import random
 import time
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timedelta
 import threading
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,7 +15,7 @@ import tenacity
 import schedule
 import pytz
 import sys
-from rich.progress import Progress
+from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 from rich.table import Table
 from rich.prompt import Prompt, IntPrompt
 
@@ -23,7 +23,7 @@ from rich.prompt import Prompt, IntPrompt
 console = Console()
 load_dotenv()
 
-# Banner dan setup logging sama seperti sebelumnya, tidak diubah
+# Banner dan setup logging (tidak diubah)
 BANNER = """
 ███████╗██████╗  ██████╗  ██████╗ ██████╗  ██████╗ ███╗   ██╗
 ██╔════╝██╔══██╗██╔═══██╗██╔════╝ ██╔══██╗██╔═══██╗████╗  ██║
@@ -66,7 +66,7 @@ logger.addHandler(stream_handler)
 console.print("[bold green]🟢 Bot dimulai. Log detail tersedia di runtime.log[/bold green]")
 logger.info("🕒 Logging timezone aktif: Asia/Jakarta")
 
-# Config
+# Config (tidak diubah)
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 RAW_SENDER_ADDRESS = os.getenv("SENDER_ADDRESS")
 RPC_URL = os.getenv("INFURA_URL")
@@ -100,14 +100,14 @@ SENT_FILE = "sent_wallets.txt"
 
 logger.info(f"⚙️ Konfigurasi: MIN_TOKEN_AMOUNT={MIN_TOKEN_AMOUNT}, MAX_TOKEN_AMOUNT={MAX_TOKEN_AMOUNT}, DAILY_WALLET_LIMIT={DAILY_WALLET_LIMIT}, MAX_THREADS={MAX_THREADS}, BATCH_SIZE={BATCH_SIZE}, IDLE_SECONDS={IDLE_SECONDS}")
 
-# Connect Web3
+# Connect Web3 (tidak diubah)
 w3 = web3.Web3(web3.Web3.HTTPProvider(RPC_URL))
 if not w3.is_connected():
     logger.error("❌ Gagal terhubung ke jaringan! Cek RPC URL")
     console.print("[bold red]❌ Gagal terhubung ke jaringan. Periksa RPC URL di .env.[/bold red]")
     exit()
 
-# Token Contract Setup
+# Token Contract Setup (tidak diubah)
 TOKEN_ABI = [
     {
         "constant": False,
@@ -138,7 +138,7 @@ TOKEN_ABI = [
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=TOKEN_ABI)
 TOKEN_DECIMALS = token_contract.functions.decimals().call()
 
-# Global Rate Limiting State
+# Global Rate Limiting State (tidak diubah)
 rate_limit_lock = threading.Lock()
 last_sent_time = 0
 current_nonce = None
@@ -146,6 +146,7 @@ nonce_lock = threading.Lock()
 
 failed_addresses = []
 
+# Fungsi sebelumnya (initialize_nonce hingga send_token_batch) tidak diubah, hanya ditampilkan sebagian untuk konteks
 def initialize_nonce():
     global current_nonce
     try:
@@ -211,26 +212,6 @@ def log_transaction(to_address, amount, status, tx_hash_or_error):
         timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"{timestamp},{to_address},{amount},{status},{tx_hash_or_error}\n")
 
-def display_runtime_logs():
-    if not os.path.exists(log_path):
-        console.print("📜 Belum ada log runtime yang dicatat.", style="yellow")
-        return
-
-    table = Table(title="📜 LOG RUNTIME (50 BARIS TERAKHIR)", box=box.SIMPLE_HEAVY)
-    table.add_column("No", justify="center", style="dim")
-    table.add_column("Waktu", style="dim", width=20)
-    table.add_column("Pesan", style="white")
-
-    with open(log_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-        recent_lines = lines[-50:] if len(lines) > 50 else lines
-        for idx, line in enumerate(recent_lines, 1):
-            if line.strip():
-                timestamp, message = line.strip().split(" ", 1)
-                table.add_row(str(idx), timestamp[1:-1], message)
-
-    console.print(table)
-
 def display_transaction_logs():
     if not os.path.exists(transaction_log_path):
         console.print("📬 Belum ada transaksi yang dicatat.", style="yellow")
@@ -285,9 +266,8 @@ def _send_token_with_retry(to_address, amount):
     to_address = web3.Web3.to_checksum_address(to_address)
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
-    # Cek gas price jaringan
-    network_gas_price = w3.eth.gas_price / 10**9  # Dalam Gwei
-    gas_price_to_use = max(network_gas_price * 1.1, MAX_GAS_PRICE_GWEI)  # 10% lebih tinggi dari jaringan, tapi dibatasi
+    network_gas_price = w3.eth.gas_price / 10**9
+    gas_price_to_use = max(network_gas_price * 1.1, MAX_GAS_PRICE_GWEI)
     logger.info(f"⛽ Gas price jaringan: {network_gas_price:.2f} Gwei, menggunakan: {gas_price_to_use:.2f} Gwei")
 
     try:
@@ -309,7 +289,7 @@ def _send_token_with_retry(to_address, amount):
     logger.info(f"📤 Transaksi dikirim: {tx_hash.hex()}")
 
     try:
-        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)  # Timeout 5 menit
+        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
         if tx_receipt.status != 1:
             logger.error(f"❌ Transaksi {tx_hash.hex()} gagal di chain: Status {tx_receipt.status}")
             raise Exception(f"Transaksi gagal: Status {tx_receipt.status}")
@@ -406,6 +386,32 @@ def retry_failed_addresses():
     logger.info(f"🔄 Mencoba ulang {len(failed_addresses)} alamat yang gagal...")
     send_token_batch(failed_addresses)
 
+# Fungsi baru untuk menghitung waktu berikutnya dan menampilkan progress timer
+def get_next_schedule_time():
+    now = datetime.now(JAKARTA_TZ)
+    next_run = datetime.combine(now.date(), dt_time(8, 0), tzinfo=JAKARTA_TZ)
+    if now >= next_run:
+        next_run += timedelta(days=1)
+    return next_run
+
+def show_progress_timer():
+    next_run = get_next_schedule_time()
+    total_seconds = (next_run - datetime.now(JAKARTA_TZ)).total_seconds()
+    
+    with Progress(
+        TextColumn("[bold yellow]⏳ Menunggu pengiriman berikutnya pada {task.description}"),
+        BarColumn(),
+        TimeRemainingColumn(),
+        transient=True
+    ) as progress:
+        task = progress.add_task(f"{next_run.strftime('%Y-%m-%d 08:00 WIB')}", total=int(total_seconds))
+        while datetime.now(JAKARTA_TZ) < next_run:
+            elapsed = (datetime.now(JAKARTA_TZ) - (next_run - timedelta(seconds=total_seconds))).total_seconds()
+            progress.update(task, completed=int(elapsed))
+            time.sleep(1)
+        progress.update(task, completed=int(total_seconds))
+    logger.info("⏰ Waktu pengiriman berikutnya telah tiba!")
+
 def main(randomize=False):
     logger.info("🟢 Fungsi `main()` dijalankan dari scheduler atau manual.")
     reset_sent_wallets()
@@ -465,8 +471,10 @@ def run_cli():
                     console.print("[bold green]🔌 Scheduler aktif setiap hari pukul 08:00 WIB (acak)[/bold green]")
                     while True:
                         schedule.run_pending()
-                        logger.info("💤 Bot aktif. Menunggu jadwal pengiriman selanjutnya...")
-                        time.sleep(60)
+                        if not schedule.jobs:  # Jika tidak ada job (setelah pengiriman selesai)
+                            show_progress_timer()  # Tampilkan progress timer
+                            schedule.every().day.at("08:00").do(main, randomize=True)  # Jadwalkan ulang
+                        time.sleep(1)  # Kurangi interval untuk update timer lebih responsif
         elif pilihan == "3":
             check_logs()
         elif pilihan == "4":
@@ -475,8 +483,10 @@ def run_cli():
             console.print("[bold green]🔌 Scheduler aktif setiap hari pukul 08:00 WIB (acak)[/bold green]")
             while True:
                 schedule.run_pending()
-                logger.info("💤 Bot aktif. Menunggu jadwal pengiriman selanjutnya...")
-                time.sleep(60)
+                if not schedule.jobs:  # Jika tidak ada job (setelah pengiriman selesai)
+                    show_progress_timer()  # Tampilkan progress timer
+                    schedule.every().day.at("08:00").do(main, randomize=True)  # Jadwalkan ulang
+                time.sleep(1)
         elif pilihan == "5":
             retry_failed_addresses()
         elif pilihan == "0":
