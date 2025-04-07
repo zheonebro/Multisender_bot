@@ -17,7 +17,7 @@ import pytz
 import sys
 from rich.progress import Progress
 from rich.table import Table
-from rich.prompt import Prompt
+from rich.prompt import Prompt, IntPrompt
 
 # Init
 console = Console()
@@ -166,7 +166,7 @@ def check_balance():
     logger.info(f"💰 Saldo token pengirim: {balance_in_tokens:.4f}")
     return balance_in_tokens
 
-def load_wallets(ignore_sent=False):
+def load_wallets(ignore_sent=False, limit=None):
     wallets = []
     sent_set = set()
     try:
@@ -188,7 +188,6 @@ def load_wallets(ignore_sent=False):
                     continue
                 checksummed_address = w3.to_checksum_address(address)
                 if ignore_sent or checksummed_address.lower() not in sent_set:
-                    # Acak jumlah token antara MIN_TOKEN_AMOUNT dan MAX_TOKEN_AMOUNT
                     amount = random.uniform(MIN_TOKEN_AMOUNT, MAX_TOKEN_AMOUNT)
                     wallets.append((checksummed_address, amount))
                     logger.info(f"✅ Menambahkan {checksummed_address} dengan jumlah acak {amount:.4f}")
@@ -196,12 +195,18 @@ def load_wallets(ignore_sent=False):
                     logger.info(f"ℹ️ {checksummed_address} sudah ada di sent_wallets.txt, dilewati.")
     except Exception as e:
         logger.error(f"❌ Gagal membaca file wallet: {e}")
+    
+    # Batasi jumlah wallet jika limit diberikan
+    if limit is not None and limit < len(wallets):
+        wallets = wallets[:limit]
+        logger.info(f"📏 Jumlah wallet dibatasi menjadi: {limit}")
+    
     logger.info(f"✅ Jumlah wallet valid yang dimuat: {len(wallets)}")
     return wallets
 
 def log_transaction(to_address, amount, status, tx_hash_or_error):
     with open(transaction_log_path, "a", encoding="utf-8") as f:
-        timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-%m-d %H:%M:%S")
+        timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"{timestamp},{to_address},{amount},{status},{tx_hash_or_error}\n")
 
 def display_runtime_logs():
@@ -427,11 +432,25 @@ def run_cli():
                 console.print("[bold yellow]ℹ️ Apakah Anda ingin langsung memulai pengiriman token sekarang?[/bold yellow]")
                 lanjut = Prompt.ask("Pilih opsi (1=Ya, 0=Tidak)", choices=["0", "1"], default="0")
                 if lanjut == "1":
+                    # Tampilkan jumlah wallet yang tersedia
+                    available_wallets = load_wallets(ignore_sent=True)
+                    console.print(f"[bold green]📋 Jumlah wallet yang tersedia untuk dikirim: {len(available_wallets)}[/bold green]")
+                    
+                    if not available_wallets:
+                        console.print("[bold red]❌ Tidak ada wallet valid di wallets.csv untuk diproses. Periksa isi file![/bold red]")
+                        continue
+                    
+                    # Minta input jumlah wallet yang akan dikirim
+                    console.print("[bold yellow]Masukkan jumlah wallet yang akan dikirim token (maksimum sesuai jumlah tersedia):[/bold yellow]")
+                    limit = IntPrompt.ask("Jumlah wallet", default=len(available_wallets), min=1, max=len(available_wallets))
+                    
                     console.print("[bold yellow]Pilih mode pengiriman:[/bold yellow]")
                     console.print("[1] Berurutan")
                     console.print("[2] Acak")
                     mode = Prompt.ask("Pilih mode", choices=["1", "2"], default="1")
-                    wallets = load_wallets(ignore_sent=True)
+                    
+                    # Muat ulang wallet dengan batas yang ditentukan
+                    wallets = load_wallets(ignore_sent=True, limit=limit)
                     logger.info(f"📋 Jumlah wallet yang dimuat setelah reset: {len(wallets)}")
                     if wallets:
                         main(randomize=(mode == "2"))
