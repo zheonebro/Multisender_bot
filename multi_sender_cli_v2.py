@@ -52,18 +52,19 @@ class JakartaFormatter(logging.Formatter):
             return dt.isoformat()
 
 logger = logging.getLogger("bot")
-logger.setLevel(logging.INFO)  # Ubah ke DEBUG jika perlu detail lebih
+logger.setLevel(logging.INFO)
 
-stream_handler = logging.StreamHandler()
 file_handler = logging.FileHandler(log_path, encoding="utf-8")
+stream_handler = logging.StreamHandler()
 
 formatter = JakartaFormatter(fmt="%(asctime)s %(message)s", datefmt="[%Y-%m-%d %H:%M:%S]")
-stream_handler.setFormatter(formatter)
 file_handler.setFormatter(formatter)
+stream_handler.setFormatter(formatter)
 
-logger.addHandler(stream_handler)
 logger.addHandler(file_handler)
+logger.addHandler(stream_handler)
 
+console.print("[bold green]🟢 Bot dimulai. Log detail tersedia di runtime.log[/bold green]")
 logger.info("🕒 Logging timezone aktif: Asia/Jakarta")
 
 # Config
@@ -77,23 +78,20 @@ EXPLORER_URL = "https://sepolia.tea.xyz/"
 MAX_THREADS = int(os.getenv("MAX_THREADS", 5))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 10))
 IDLE_SECONDS = int(os.getenv("IDLE_SECONDS", 30))
-MIN_TOKEN_AMOUNT = 10.0  # Rentang minimum token acak
-MAX_TOKEN_AMOUNT = 50.0  # Rentang maksimum token acak
+MIN_TOKEN_AMOUNT = 10.0
+MAX_TOKEN_AMOUNT = 50.0
+DAILY_WALLET_LIMIT = int(os.getenv("DAILY_WALLET_LIMIT", 100))  # Default 100 wallet per hari
 
 if not PRIVATE_KEY or not RAW_SENDER_ADDRESS or not RPC_URL:
     logger.error("❌ PRIVATE_KEY, SENDER_ADDRESS, atau INFURA_URL tidak ditemukan di .env!")
+    console.print("[bold red]❌ Konfigurasi .env tidak lengkap. Periksa runtime.log untuk detail.[/bold red]")
     exit()
 
 SENDER_ADDRESS = web3.Web3.to_checksum_address(RAW_SENDER_ADDRESS)
 
-DAILY_LIMIT_RAW = os.getenv("DAILY_LIMIT", "0")
-try:
-    DAILY_LIMIT = float(DAILY_LIMIT_RAW)
-except ValueError:
-    DAILY_LIMIT = 0
-
 if not TOKEN_CONTRACT_RAW:
     logger.error("❌ Environment variable 'TOKEN_CONTRACT' tidak ditemukan atau kosong!")
+    console.print("[bold red]❌ Konfigurasi TOKEN_CONTRACT hilang.[/bold red]")
     exit()
 
 TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(TOKEN_CONTRACT_RAW)
@@ -101,13 +99,13 @@ TOKEN_CONTRACT_ADDRESS = web3.Web3.to_checksum_address(TOKEN_CONTRACT_RAW)
 CSV_FILE = "wallets.csv"
 SENT_FILE = "sent_wallets.txt"
 
-# Log konfigurasi saat startup
-logger.info(f"⚙️ Konfigurasi: MIN_TOKEN_AMOUNT={MIN_TOKEN_AMOUNT}, MAX_TOKEN_AMOUNT={MAX_TOKEN_AMOUNT}, DAILY_LIMIT={DAILY_LIMIT}, MAX_THREADS={MAX_THREADS}, BATCH_SIZE={BATCH_SIZE}, IDLE_SECONDS={IDLE_SECONDS}")
+logger.info(f"⚙️ Konfigurasi: MIN_TOKEN_AMOUNT={MIN_TOKEN_AMOUNT}, MAX_TOKEN_AMOUNT={MAX_TOKEN_AMOUNT}, DAILY_WALLET_LIMIT={DAILY_WALLET_LIMIT}, MAX_THREADS={MAX_THREADS}, BATCH_SIZE={BATCH_SIZE}, IDLE_SECONDS={IDLE_SECONDS}")
 
 # Connect Web3
 w3 = web3.Web3(web3.Web3.HTTPProvider(RPC_URL))
 if not w3.is_connected():
     logger.error("❌ Gagal terhubung ke jaringan! Cek RPC URL")
+    console.print("[bold red]❌ Gagal terhubung ke jaringan. Periksa RPC URL di .env.[/bold red]")
     exit()
 
 # Token Contract Setup
@@ -190,9 +188,9 @@ def load_wallets(ignore_sent=False, limit=None):
                 if ignore_sent or checksummed_address.lower() not in sent_set:
                     amount = random.uniform(MIN_TOKEN_AMOUNT, MAX_TOKEN_AMOUNT)
                     wallets.append((checksummed_address, amount))
-                    logger.info(f"✅ Menambahkan {checksummed_address} dengan jumlah acak {amount:.4f}")
+                    logger.debug(f"✅ Menambahkan {checksummed_address} dengan jumlah acak {amount:.4f}")
                 else:
-                    logger.info(f"ℹ️ {checksummed_address} sudah ada di sent_wallets.txt, dilewati.")
+                    logger.debug(f"ℹ️ {checksummed_address} sudah ada di sent_wallets.txt, dilewati.")
     except Exception as e:
         logger.error(f"❌ Gagal membaca file wallet: {e}")
     
@@ -316,7 +314,7 @@ def send_token_threadsafe(to_address, amount):
         return False
     finally:
         delay = random.uniform(0.5, 2.0)
-        logger.info(f"⏱️ Delay adaptif {delay:.2f} detik sebelum lanjut...")
+        logger.debug(f"⏱️ Delay adaptif {delay:.2f} detik sebelum lanjut...")
         time.sleep(delay)
 
 def reset_sent_wallets():
@@ -333,7 +331,6 @@ def send_token_batch(wallets, randomize=False):
     if randomize:
         random.shuffle(wallets)
         logger.info("🔀 Daftar wallet diacak untuk pengiriman acak.")
-    total_sent = 0.0
     total_wallets_sent = 0
 
     for i in range(0, len(wallets), BATCH_SIZE):
@@ -352,22 +349,19 @@ def send_token_batch(wallets, randomize=False):
                         batch_wallets_sent += 1
                     progress.advance(task)
 
-        logger.info(f"📊 Total wallet berhasil dikirim di batch {i // BATCH_SIZE + 1}: {batch_wallets_sent}/{len(batch)}")
         total_wallets_sent += batch_wallets_sent
+        logger.info(f"📊 Total wallet berhasil dikirim di batch {i // BATCH_SIZE + 1}: {batch_wallets_sent}/{len(batch)}")
+
+        if DAILY_WALLET_LIMIT > 0 and total_wallets_sent >= DAILY_WALLET_LIMIT:
+            logger.warning(f"🚘 Mencapai batas harian {DAILY_WALLET_LIMIT} wallet, berhenti sementara.")
+            console.print(f"[bold red]ℹ️ Limit harian wallet tercapai: {total_wallets_sent}/{DAILY_WALLET_LIMIT} alamat telah dikirim hari ini.[/bold red]")
+            console.print(f"[bold green]📦 Total wallet berhasil dikirim: {total_wallets_sent}[/bold green]")
+            return False
 
         logger.info(f"📈 Menunggu {IDLE_SECONDS} detik sebelum batch berikutnya...")
         time.sleep(IDLE_SECONDS)
-
-        if DAILY_LIMIT > 0:
-            total_sent += sum([amt for _, amt in batch])
-            logger.info(f"📊 Total token terkirim sejauh ini: {total_sent:.4f}/{DAILY_LIMIT}")
-            if total_sent >= DAILY_LIMIT:
-                logger.warning(f"🚘 Mencapai batas harian {DAILY_LIMIT}, berhenti sementara.")
-                console.print(f"[bold red]ℹ️ Limit harian tercapai: {total_sent:.4f}/{DAILY_LIMIT} token telah dikirim hari ini.[/bold red]")
-                console.print(f"[bold green]📦 Total wallet berhasil dikirim: {total_wallets_sent}[/bold green]")
-                return False
     
-    logger.info("✅ Pengiriman batch selesai tanpa mencapai limit harian.")
+    logger.info("✅ Pengiriman batch selesai.")
     console.print(f"[bold green]📦 Total wallet berhasil dikirim: {total_wallets_sent}[/bold green]")
     return True
 
@@ -375,14 +369,15 @@ def retry_failed_addresses():
     global failed_addresses
     if not failed_addresses:
         logger.info("✅ Tidak ada alamat yang gagal untuk dicoba ulang.")
+        console.print("[bold green]✅ Tidak ada alamat yang gagal untuk dicoba ulang.[/bold green]")
         return
     logger.info(f"🔄 Mencoba ulang {len(failed_addresses)} alamat yang gagal...")
     send_token_batch(failed_addresses)
 
 def main(randomize=False):
     logger.info("🟢 Fungsi `main()` dijalankan dari scheduler atau manual.")
-    reset_sent_wallets()  # Reset otomatis sebelum pengiriman
-    wallets = load_wallets(ignore_sent=True)  # ignore_sent=True karena sudah direset
+    reset_sent_wallets()
+    wallets = load_wallets(ignore_sent=True)
     if not wallets:
         logger.info("🚫 Tidak ada wallet untuk dikirim di wallets.csv.")
         console.print("[bold yellow]ℹ️ Tidak ada wallet valid di wallets.csv untuk diproses.[/bold yellow]")
@@ -391,6 +386,7 @@ def main(randomize=False):
     balance = check_balance()
     if balance < required_amount:
         logger.error(f"❌ Saldo tidak cukup! Dibutuhkan: {required_amount:.4f}, Tersedia: {balance:.4f}")
+        console.print(f"[bold red]❌ Saldo tidak cukup! Dibutuhkan: {required_amount:.4f}, Tersedia: {balance:.4f}[/bold red]")
         return False
     logger.info(f"💰 Jumlah wallet yang akan diproses: {len(wallets)}")
     success = send_token_batch(wallets, randomize)
@@ -414,10 +410,9 @@ def ask_schedule_with_timeout():
 
 def run_cli():
     while True:
-        display_runtime_logs()
         console.print("\n[bold cyan]=== MENU UTAMA ===[/bold cyan]", style="cyan")
         console.print(f"[bold yellow]Rentang Token Acak per Wallet: {MIN_TOKEN_AMOUNT} - {MAX_TOKEN_AMOUNT}[/bold yellow]")
-        console.print(f"[bold yellow]Limit Harian: {DAILY_LIMIT} token[/bold yellow]")
+        console.print(f"[bold yellow]Limit Harian Wallet: {DAILY_WALLET_LIMIT} alamat[/bold yellow]")
         console.print("[1] Jalankan pengiriman token sekarang (berurutan)")
         console.print("[2] Jalankan pengiriman token sekarang (acak)")
         console.print("[3] Tampilkan log transaksi")
@@ -435,6 +430,7 @@ def run_cli():
                 if schedule_choice:
                     schedule.every().day.at("08:00").do(main, randomize=True)
                     logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB (acak)")
+                    console.print("[bold green]🔌 Scheduler aktif setiap hari pukul 08:00 WIB (acak)[/bold green]")
                     while True:
                         schedule.run_pending()
                         logger.info("💤 Bot aktif. Menunggu jadwal pengiriman selanjutnya...")
@@ -444,6 +440,7 @@ def run_cli():
         elif pilihan == "4":
             schedule.every().day.at("08:00").do(main, randomize=True)
             logger.info("🔌 Menjadwalkan pengiriman token setiap hari pukul 08:00 WIB (acak)")
+            console.print("[bold green]🔌 Scheduler aktif setiap hari pukul 08:00 WIB (acak)[/bold green]")
             while True:
                 schedule.run_pending()
                 logger.info("💤 Bot aktif. Menunggu jadwal pengiriman selanjutnya...")
