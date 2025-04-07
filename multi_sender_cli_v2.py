@@ -52,7 +52,7 @@ class JakartaFormatter(logging.Formatter):
             return dt.isoformat()
 
 logger = logging.getLogger("bot")
-logger.setLevel(logging.DEBUG)  # Ubah ke DEBUG untuk detail lebih banyak
+logger.setLevel(logging.INFO)  # Ubah ke DEBUG jika perlu detail lebih
 
 stream_handler = logging.StreamHandler()
 file_handler = logging.FileHandler(log_path, encoding="utf-8")
@@ -77,8 +77,8 @@ EXPLORER_URL = "https://sepolia.tea.xyz/"
 MAX_THREADS = int(os.getenv("MAX_THREADS", 5))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 10))
 IDLE_SECONDS = int(os.getenv("IDLE_SECONDS", 30))
-MIN_TOKEN_AMOUNT = float(os.getenv("MIN_TOKEN_AMOUNT", "0.1"))  # Batas minimal token per wallet
-MAX_TOKEN_AMOUNT = float(os.getenv("MAX_TOKEN_AMOUNT", "100.0"))  # Batas maksimal token per wallet
+MIN_TOKEN_AMOUNT = 10.0  # Rentang minimum token acak
+MAX_TOKEN_AMOUNT = 50.0  # Rentang maksimum token acak
 
 if not PRIVATE_KEY or not RAW_SENDER_ADDRESS or not RPC_URL:
     logger.error("❌ PRIVATE_KEY, SENDER_ADDRESS, atau INFURA_URL tidak ditemukan di .env!")
@@ -174,36 +174,26 @@ def load_wallets(ignore_sent=False):
             with open(SENT_FILE, "r") as f:
                 sent_set = set(line.strip().lower() for line in f.readlines())
             logger.info(f"📜 Jumlah wallet di sent_wallets.txt: {len(sent_set)}")
-            logger.debug(f"📜 Isi sent_wallets.txt (huruf kecil): {sent_set}")
         with open(CSV_FILE, "r") as f:
             reader = csv.reader(f)
             raw_wallets = list(reader)
             logger.info(f"📋 Jumlah entri di wallets.csv: {len(raw_wallets)}")
             for row in raw_wallets:
-                if len(row) < 2:
-                    logger.warning(f"⚠️ Baris kosong atau tidak lengkap: {row}")
+                if not row or len(row) == 0:
+                    logger.warning(f"⚠️ Baris kosong: {row}")
                     continue
-                address, amount = row[0].strip(), row[1].strip()
-                logger.debug(f"🔍 Memeriksa alamat: {address}")
+                address = row[0].strip()
                 if not w3.is_address(address):
                     logger.warning(f"⚠️ Alamat tidak valid: {address}, dilewati.")
                     continue
-                try:
-                    amount_float = float(amount)
-                    if amount_float < MIN_TOKEN_AMOUNT:
-                        logger.warning(f"⚠️ Jumlah {amount_float} untuk {address} di bawah minimum ({MIN_TOKEN_AMOUNT}), dilewati.")
-                        continue
-                    if amount_float > MAX_TOKEN_AMOUNT:
-                        logger.warning(f"⚠️ Jumlah {amount_float} untuk {address} melebihi maksimum ({MAX_TOKEN_AMOUNT}), dilewati.")
-                        continue
-                    checksummed_address = w3.to_checksum_address(address)  # Konversi ke checksummed
-                    if ignore_sent or checksummed_address.lower() not in sent_set:
-                        wallets.append((checksummed_address, amount_float))
-                        logger.debug(f"✅ Menambahkan {checksummed_address} ke daftar wallet.")
-                    else:
-                        logger.info(f"ℹ️ {checksummed_address} sudah ada di sent_wallets.txt, dilewati.")
-                except ValueError:
-                    logger.warning(f"⚠️ Jumlah tidak valid untuk alamat {address}: {amount}, dilewati.")
+                checksummed_address = w3.to_checksum_address(address)
+                if ignore_sent or checksummed_address.lower() not in sent_set:
+                    # Acak jumlah token antara MIN_TOKEN_AMOUNT dan MAX_TOKEN_AMOUNT
+                    amount = random.uniform(MIN_TOKEN_AMOUNT, MAX_TOKEN_AMOUNT)
+                    wallets.append((checksummed_address, amount))
+                    logger.info(f"✅ Menambahkan {checksummed_address} dengan jumlah acak {amount:.4f}")
+                else:
+                    logger.info(f"ℹ️ {checksummed_address} sudah ada di sent_wallets.txt, dilewati.")
     except Exception as e:
         logger.error(f"❌ Gagal membaca file wallet: {e}")
     logger.info(f"✅ Jumlah wallet valid yang dimuat: {len(wallets)}")
@@ -216,7 +206,7 @@ def log_transaction(to_address, amount, status, tx_hash_or_error):
 
 def display_runtime_logs():
     if not os.path.exists(log_path):
-        console.print("📜 Belum ada log runtime yang dicatat.", style="yellow")
+ HEAVY        console.print("📜 Belum ada log runtime yang dicatat.", style="yellow")
         return
 
     table = Table(title="📜 LOG RUNTIME (50 BARIS TERAKHIR)", box=box.SIMPLE_HEAVY)
@@ -289,7 +279,7 @@ def _send_token_with_retry(to_address, amount):
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
     gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
-    gas_limit = int(gas_estimate * 1.2)  # Tambah 20% buffer
+    gas_limit = int(gas_estimate * 1.2)
 
     tx = token_contract.functions.transfer(to_address, scaled_amount).build_transaction({
         'from': from_address,
@@ -310,7 +300,7 @@ def _send_token_with_retry(to_address, amount):
 def send_token_threadsafe(to_address, amount):
     try:
         tx_hash = _send_token_with_retry(to_address, amount)
-        logger.info(f"✅ Token terkirim ke {to_address} | Amount: {amount} | TxHash: {tx_hash}")
+        logger.info(f"✅ Token terkirim ke {to_address} | Amount: {amount:.4f} | TxHash: {tx_hash}")
         log_transaction(to_address, amount, "SUCCESS", tx_hash)
         with open(SENT_FILE, "a") as f:
             f.write(f"{to_address}\n")
@@ -325,7 +315,7 @@ def send_token_threadsafe(to_address, amount):
 def reset_sent_wallets():
     try:
         with open(SENT_FILE, "w") as f:
-            f.write("")  # Kosongkan file
+            f.write("")
         logger.info("🔄 File sent_wallets.txt telah direset.")
         console.print("[bold green]✅ Reset limit harian berhasil! Anda bisa memulai pengiriman ulang.[/bold green]")
         with open(SENT_FILE, "r") as f:
@@ -371,7 +361,6 @@ def send_token_batch(wallets, randomize=False):
                         logger.info("🔄 Memulai ulang pengiriman setelah reset manual...")
                         new_wallets = load_wallets(ignore_sent=True)
                         logger.info(f"📋 Jumlah wallet yang dimuat setelah reset: {len(new_wallets)}")
-                        logger.debug(f"📋 Daftar wallet yang dimuat: {new_wallets}")
                         return send_token_batch(new_wallets, randomize)
                 else:
                     logger.info("⏳ Menunggu jadwal reset otomatis besok pukul 08:00 WIB.")
@@ -400,14 +389,13 @@ def main(randomize=False):
         logger.error(f"❌ Saldo tidak cukup! Dibutuhkan: {required_amount:.4f}, Tersedia: {balance:.4f}")
         return
     logger.info(f"💰 Jumlah wallet yang akan diproses: {len(wallets)}")
-    logger.debug(f"📋 Daftar wallet yang akan diproses: {wallets}")
     send_token_batch(wallets, randomize)
 
 def run_cli():
     while True:
-        display_runtime_logs()  # Tampilkan log runtime otomatis
+        display_runtime_logs()
         console.print("\n[bold cyan]=== MENU UTAMA ===[/bold cyan]", style="cyan")
-        console.print(f"[bold yellow]Batas Token per Wallet: {MIN_TOKEN_AMOUNT} - {MAX_TOKEN_AMOUNT}[/bold yellow]")
+        console.print(f"[bold yellow]Rentang Token Acak per Wallet: {MIN_TOKEN_AMOUNT} - {MAX_TOKEN_AMOUNT}[/bold yellow]")
         console.print(f"[bold yellow]Limit Harian: {DAILY_LIMIT} token[/bold yellow]")
         console.print("[1] Jalankan pengiriman token sekarang (berurutan)")
         console.print("[2] Jalankan pengiriman token sekarang (acak)")
@@ -445,7 +433,6 @@ def run_cli():
                     mode = Prompt.ask("Pilih mode", choices=["1", "2"], default="1")
                     wallets = load_wallets(ignore_sent=True)
                     logger.info(f"📋 Jumlah wallet yang dimuat setelah reset: {len(wallets)}")
-                    logger.debug(f"📋 Daftar wallet yang dimuat: {wallets}")
                     if wallets:
                         main(randomize=(mode == "2"))
                     else:
