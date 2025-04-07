@@ -15,6 +15,7 @@ import tenacity
 import schedule
 import pytz
 import sys
+import requests  # Tambahkan library requests untuk memanggil API
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 from rich.table import Table
 from rich.prompt import Prompt, IntPrompt
@@ -146,7 +147,22 @@ nonce_lock = threading.Lock()
 
 failed_addresses = []
 
-# Fungsi sebelumnya (initialize_nonce hingga send_token_batch) tidak diubah, hanya ditampilkan sebagian untuk konteks
+# Fungsi baru untuk mengambil gas price dari Sepolia TEA Blockscout
+def get_sepolia_tea_gas_price():
+    url = "https://sepolia.tea.xyz/api/v1/gas-price-oracle"
+    try:
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        # Ambil nilai gas price rata-rata (average) dalam Gwei
+        gas_price_gwei = float(data.get("average", 0))
+        logger.info(f"⛽ Gas price dari Sepolia TEA: {gas_price_gwei:.2f} Gwei")
+        return gas_price_gwei
+    except requests.RequestException as e:
+        logger.error(f"❌ Gagal mengambil gas price dari Sepolia TEA: {e}")
+        return None
+
+# Fungsi sebelumnya (initialize_nonce hingga check_balance) tidak diubah
 def initialize_nonce():
     global current_nonce
     try:
@@ -255,6 +271,7 @@ def check_logs():
     logger.info("📜 Menampilkan seluruh log transaksi...")
     display_transaction_logs()
 
+# Modifikasi _send_token_with_retry untuk menggunakan gas price dari Sepolia TEA
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(3),
     wait=tenacity.wait_exponential(multiplier=2, min=2, max=10),
@@ -266,9 +283,17 @@ def _send_token_with_retry(to_address, amount):
     to_address = web3.Web3.to_checksum_address(to_address)
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
-    network_gas_price = w3.eth.gas_price / 10**9
-    gas_price_to_use = max(network_gas_price * 1.1, MAX_GAS_PRICE_GWEI)
-    logger.info(f"⛽ Gas price jaringan: {network_gas_price:.2f} Gwei, menggunakan: {gas_price_to_use:.2f} Gwei")
+    # Ambil gas price dari Sepolia TEA
+    tea_gas_price = get_sepolia_tea_gas_price()
+    if tea_gas_price is not None:
+        gas_price_to_use = min(tea_gas_price * 1.1, MAX_GAS_PRICE_GWEI)  # 10% lebih tinggi, tapi dibatasi oleh MAX_GAS_PRICE_GWEI
+    else:
+        # Fallback ke gas price jaringan jika API gagal
+        network_gas_price = w3.eth.gas_price / 10**9  # Dalam Gwei
+        gas_price_to_use = min(network_gas_price * 1.1, MAX_GAS_PRICE_GWEI)
+        logger.warning(f"⚠️ Menggunakan gas price jaringan sebagai fallback: {gas_price_to_use:.2f} Gwei")
+
+    logger.info(f"⛽ Menggunakan gas price: {gas_price_to_use:.2f} Gwei")
 
     try:
         gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
@@ -386,7 +411,6 @@ def retry_failed_addresses():
     logger.info(f"🔄 Mencoba ulang {len(failed_addresses)} alamat yang gagal...")
     send_token_batch(failed_addresses)
 
-# Fungsi baru untuk menghitung waktu berikutnya dan menampilkan progress timer
 def get_next_schedule_time():
     now = datetime.now(JAKARTA_TZ)
     next_run = datetime.combine(now.date(), dt_time(8, 0), tzinfo=JAKARTA_TZ)
@@ -471,10 +495,10 @@ def run_cli():
                     console.print("[bold green]🔌 Scheduler aktif setiap hari pukul 08:00 WIB (acak)[/bold green]")
                     while True:
                         schedule.run_pending()
-                        if not schedule.jobs:  # Jika tidak ada job (setelah pengiriman selesai)
-                            show_progress_timer()  # Tampilkan progress timer
-                            schedule.every().day.at("08:00").do(main, randomize=True)  # Jadwalkan ulang
-                        time.sleep(1)  # Kurangi interval untuk update timer lebih responsif
+                        if not schedule.jobs:
+                            show_progress_timer()
+                            schedule.every().day.at("08:00").do(main, randomize=True)
+                        time.sleep(1)
         elif pilihan == "3":
             check_logs()
         elif pilihan == "4":
@@ -483,9 +507,9 @@ def run_cli():
             console.print("[bold green]🔌 Scheduler aktif setiap hari pukul 08:00 WIB (acak)[/bold green]")
             while True:
                 schedule.run_pending()
-                if not schedule.jobs:  # Jika tidak ada job (setelah pengiriman selesai)
-                    show_progress_timer()  # Tampilkan progress timer
-                    schedule.every().day.at("08:00").do(main, randomize=True)  # Jadwalkan ulang
+                if not schedule.jobs:
+                    show_progress_timer()
+                    schedule.every().day.at("08:00").do(main, randomize=True)
                 time.sleep(1)
         elif pilihan == "5":
             retry_failed_addresses()
