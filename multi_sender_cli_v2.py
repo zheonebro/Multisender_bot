@@ -84,14 +84,12 @@ RPC_SEMAPHORE = Semaphore(MAX_THREADS)
 nonce_lock = Lock()
 global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
 
-
 def get_next_nonce():
     global global_nonce
     with nonce_lock:
         current_nonce = global_nonce
         global_nonce += 1
     return current_nonce
-
 
 def get_transaction_status_by_nonce(nonce):
     try:
@@ -104,7 +102,6 @@ def get_transaction_status_by_nonce(nonce):
         logger.error(f"Gagal cek status transaksi nonce {nonce}: {e}")
         return "error"
 
-
 def get_gas_price(multiplier=5.0, previous=None):
     try:
         gas_price = w3.eth.gas_price / 10**9 * multiplier
@@ -114,7 +111,6 @@ def get_gas_price(multiplier=5.0, previous=None):
     except Exception as e:
         logger.error(f"❌ Gagal ambil gas price: {e}")
         return MAX_GAS_PRICE_GWEI
-
 
 def cancel_transaction(nonce, max_attempts=3):
     for attempt in range(1, max_attempts + 1):
@@ -141,6 +137,25 @@ def cancel_transaction(nonce, max_attempts=3):
             time.sleep(2)
     return None
 
+def load_wallets(mode="random"):
+    with open(CSV_FILE, newline='') as csvfile:
+        reader = csv.reader(csvfile)
+        all_wallets = [row[0] for row in reader if row]
+
+    if not os.path.exists(SENT_FILE):
+        sent_wallets = set()
+    else:
+        with open(SENT_FILE) as f:
+            sent_wallets = set(line.strip() for line in f)
+
+    remaining_wallets = list(set(all_wallets) - sent_wallets)
+
+    if mode == "random":
+        random.shuffle(remaining_wallets)
+    else:
+        remaining_wallets.sort()
+
+    return remaining_wallets[:DAILY_WALLET_LIMIT]
 
 def countdown_timer():
     tz = pytz.timezone('Asia/Jakarta')
@@ -165,7 +180,6 @@ def countdown_timer():
     console.print("\n[bold green]🕛 Mulai ulang pengiriman token![/bold green]")
     main()
 
-
 def show_intro():
     console.rule("[bold cyan]ERC-20 Token Sender")
     intro = "🚀 Mengirim token secara otomatis ke 200 wallet setiap hari."
@@ -176,7 +190,6 @@ def show_intro():
             live.update(text)
             time.sleep(0.03)
     console.print("\n")
-
 
 def show_status_info():
     # Pastikan file sent_wallets.txt ada
@@ -193,7 +206,6 @@ def show_status_info():
     table.add_row("💰 Sisa Token", f"{balance:,.2f}")
     table.add_row("📤 Terkirim Hari Ini", f"{sent_today}/{DAILY_WALLET_LIMIT}")
     console.print(table)
-
 
 def main():
     show_intro()
@@ -223,7 +235,6 @@ def main():
 
     console.print(Panel("[bold green]🎉 Pengiriman selesai![/bold green]"))
     countdown_timer()
-
 
 if __name__ == "__main__":
     main()
