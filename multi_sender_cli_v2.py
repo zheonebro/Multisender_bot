@@ -268,18 +268,21 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
     to_address = web3.Web3.to_checksum_address(to_address)
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
+    logger.info(f"🔍 Memulai pengiriman ke {to_address} (attempt {attempt})")
     # Cek latensi jaringan
     latency = check_network_latency()
     if latency > 5.0:
         logger.warning(f"⚠️ Latensi jaringan tinggi ({latency:.2f}s), mungkin memengaruhi konfirmasi")
 
-    gas_multiplier = 2.5 + (attempt - 1) * 2.0  # Naik lebih agresif
+    gas_multiplier = 2.5 + (attempt - 1) * 2.0
     tea_gas_price = get_sepolia_tea_gas_price(multiplier=gas_multiplier, previous_gas_price=previous_gas_price)
     gas_price_to_use = min(tea_gas_price, MAX_GAS_PRICE_GWEI)
 
     try:
+        logger.debug(f"⛽ Mengestimasi gas untuk {to_address}")
         gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
-        gas_limit = int(gas_estimate * 1.5)
+        gas_limit = int(gas_estimate * 2.0)  # Naikkan faktor untuk keamanan
+        logger.debug(f"✅ Gas estimate: {gas_estimate}, Gas limit digunakan: {gas_limit}")
     except Exception as e:
         logger.error(f"❌ Gagal mengestimasi gas untuk {to_address} (attempt {attempt}): {str(e)}\n{traceback.format_exc()}")
         if remaining_wallets:
@@ -302,12 +305,15 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
 
     logger.debug(f"ℹ️ Tx Details (attempt {attempt}): {tx}")
     try:
+        logger.debug(f"✍️ Menandatangani transaksi untuk {to_address}")
         signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+        logger.debug(f"📤 Mengirim transaksi ke jaringan")
         start_time = time.time()
         tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
         logger.info(f"📤 Transaksi dikirim ke {to_address}: {tx_hash.hex()} | Gas Price: {gas_price_to_use} Gwei | Gas Limit: {gas_limit} | Nonce: {nonce}")
 
-        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
+        logger.debug(f"⏳ Menunggu konfirmasi transaksi {tx_hash.hex()}")
+        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)  # Naikkan timeout
         confirm_time = time.time() - start_time
         if tx_receipt.status != 1:
             logger.error(f"❌ Transaksi {tx_hash.hex()} gagal di chain: Status {tx_receipt.status}\nReceipt: {tx_receipt}")
@@ -319,8 +325,8 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
         logger.info(f"✅ Transaksi {tx_hash.hex()} dikonfirmasi | Gas Used: {tx_receipt.gasUsed} | Confirm Time: {confirm_time:.2f}s")
         timeout_count = 0
         return tx_hash.hex(), tx_receipt.gasUsed, confirm_time
-    except web3.exceptions.TimeExhausted:
-        logger.error(f"⏰ Transaksi {tx_hash.hex()} timeout setelah 30 detik (attempt {attempt})\n{traceback.format_exc()}")
+    except web3.exceptions.TimeExhausted as e:
+        logger.error(f"⏰ Transaksi {tx_hash.hex()} timeout setelah 60 detik (attempt {attempt}): {str(e)}\n{traceback.format_exc()}")
         timeout_count += 1
         cancel_hash = cancel_transaction(tx_hash.hex(), nonce)
         if cancel_hash:
@@ -408,53 +414,8 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
                     return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
                 raise Exception("Underpriced setelah 3 attempt dan tidak ada alamat pengganti")
         raise
-    except ValueError as e:
-        logger.error(f"❌ ValueError saat mengirim transaksi ke {to_address}: {str(e)}\n{traceback.format_exc()}")
-        if "replacement transaction underpriced" in str(e) or "future transaction tries to replace pending" in str(e):
-            logger.error(f"❌ Transaksi {tx_hash.hex()} underpriced atau konflik nonce (attempt {attempt})")
-            cancel_hash = cancel_transaction(tx_hash.hex(), nonce)
-            if cancel_hash:
-                logger.info(f"✅ Transaksi lama dibatalkan dengan {cancel_hash.hex()}, lanjut ke alamat berikutnya")
-                if remaining_wallets:
-                    new_addr, new_amt = remaining_wallets.pop(0)
-                    logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
-                    return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
-            else:
-                logger.error(f"❌ Gagal membatalkan transaksi {tx_hash.hex()}, sinkronisasi nonce")
-                time.sleep(1)
-                updated_nonce = get_pending_transactions()
-                logger.info(f"ℹ️ Nonce diperbarui setelah underpriced: {updated_nonce}")
-                if updated_nonce > nonce:
-                    logger.info(f"✅ Transaksi lama di-drop atau dikonfirmasi")
-                    if remaining_wallets:
-                        new_addr, new_amt = remaining_wallets.pop(0)
-                        logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
-                        return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
-                if attempt < 3:
-                    logger.info(f"🔄 Mencoba lagi dengan gas lebih tinggi untuk {to_address} (attempt {attempt + 1})")
-                    return _send_token(to_address, amount, remaining_wallets, attempt + 1, previous_gas_price=gas_price_to_use)
-                logger.warning(f"⚠️ Maksimum attempt tercapai untuk {to_address}, lanjut ke alamat berikutnya")
-                if remaining_wallets:
-                    new_addr, new_amt = remaining_wallets.pop(0)
-                    logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
-                    return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
-            raise Exception("Underpriced atau konflik nonce dan gagal membatalkan transaksi")
-        elif "nonce too low" in str(e):
-            logger.error(f"❌ Nonce terlalu rendah untuk {tx_hash.hex()}, sinkronisasi ulang")
-            time.sleep(1)
-            updated_nonce = get_pending_transactions()
-            logger.info(f"ℹ️ Nonce diperbarui ke: {updated_nonce}")
-            return _send_token(to_address, amount, remaining_wallets, attempt=1)
-        elif "transaction already imported" in str(e):
-            logger.error(f"❌ Transaksi {tx_hash.hex()} sudah ada di mempool, sinkronisasi nonce")
-            time.sleep(1)
-            updated_nonce = get_pending_transactions()
-            if updated_nonce > nonce:
-                logger.info(f"✅ Transaksi lama di-drop atau dikonfirmasi")
-                if remaining_wallets:
-                    new_addr, new_amt = remaining_wallets.pop(0)
-                    logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
-                    return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
+    except Exception as e:
+        logger.error(f"❌ Error tak terduga saat mengirim transaksi ke {to_address}: {str(e)}\n{traceback.format_exc()}")
         raise
 
 def send_token(to_address, amount, remaining_wallets):
