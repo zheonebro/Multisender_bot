@@ -10,12 +10,12 @@ import csv
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, SpinnerColumn
-from rich.prompt import IntPrompt, Prompt
+from rich.prompt import Prompt
 from rich.text import Text
 from rich.table import Table
 from rich.live import Live
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Semaphore, Lock, Thread
+from threading import Semaphore, Lock
 
 # Setup logging
 logging.basicConfig(
@@ -40,6 +40,8 @@ MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "2000"))
 MIN_TOKEN_AMOUNT = 10.0
 MAX_TOKEN_AMOUNT = 50.0
 DAILY_WALLET_LIMIT = 200
+MAX_TOTAL_SEND = 1000  # Token
+MIN_RECEIVER_BALANCE = 0.1
 CSV_FILE = "wallets.csv"
 SENT_FILE = "sent_wallets.txt"
 TRANSACTION_LOG = f"runtime_logs/transactions_{datetime.now(pytz.timezone('Asia/Jakarta')).strftime('%Y%m%d_%H%M%S')}.log"
@@ -86,12 +88,14 @@ RPC_SEMAPHORE = Semaphore(MAX_THREADS)
 nonce_lock = Lock()
 global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
 
+
 def get_next_nonce():
     global global_nonce
     with nonce_lock:
         current_nonce = global_nonce
         global_nonce += 1
     return current_nonce
+
 
 def get_transaction_status_by_nonce(nonce):
     try:
@@ -104,6 +108,7 @@ def get_transaction_status_by_nonce(nonce):
         logger.error(f"Gagal cek status transaksi nonce {nonce}: {e}")
         return "error"
 
+
 def get_gas_price(multiplier=5.0, previous=None):
     try:
         gas_price = w3.eth.gas_price / 10**9 * multiplier
@@ -113,6 +118,7 @@ def get_gas_price(multiplier=5.0, previous=None):
     except Exception as e:
         logger.error(f"❌ Gagal ambil gas price: {e}")
         return MAX_GAS_PRICE_GWEI
+
 
 def cancel_transaction(nonce, max_attempts=3):
     for attempt in range(1, max_attempts + 1):
@@ -140,6 +146,7 @@ def cancel_transaction(nonce, max_attempts=3):
             time.sleep(2)
     return None
 
+
 def load_wallets(mode="random"):
     with open(CSV_FILE, newline='') as csvfile:
         reader = csv.reader(csvfile)
@@ -158,7 +165,20 @@ def load_wallets(mode="random"):
     else:
         remaining_wallets.sort()
 
-    return remaining_wallets[:DAILY_WALLET_LIMIT]
+    return remaining_wallets
+
+
+def filter_wallets_by_balance(wallets):
+    filtered = []
+    for wallet in wallets:
+        try:
+            balance = token_contract.functions.balanceOf(Web3.to_checksum_address(wallet)).call() / (10 ** TOKEN_DECIMALS)
+            if balance >= MIN_RECEIVER_BALANCE:
+                filtered.append(wallet)
+        except:
+            continue
+    return filtered[:DAILY_WALLET_LIMIT]
+
 
 def send_worker(receiver, max_retries=3):
     receiver = Web3.to_checksum_address(receiver)
@@ -169,7 +189,11 @@ def send_worker(receiver, max_retries=3):
     for attempt in range(1, max_retries + 1):
         try:
             nonce = get_next_nonce()
-            gas_price = get_gas_price(multiplier=5.0 + (attempt - 1) * 2.0)
+            base_gas = w3.eth.gas_price / 1e9
+            gas_price = base_gas * (1.15 + 0.05 * (attempt - 1))
+            gas_price = min(gas_price, MAX_GAS_PRICE_GWEI)
+
+            console.print(f"[blue]🧾 TX ke {receiver} | Nonce: {nonce} | GasPrice: {gas_price:.1f} gwei[/blue]")
 
             tx = token_contract.functions.transfer(receiver, token_amount).build_transaction({
                 'from': SENDER_ADDRESS,
@@ -192,7 +216,7 @@ def send_worker(receiver, max_retries=3):
                     f.write(f"{receiver}\n")
                 with open(TRANSACTION_LOG, "a") as logf:
                     logf.write(f"{datetime.now(pytz.timezone('Asia/Jakarta'))} | {receiver} | {amount} | {tx_hash.hex()}\n")
-                return
+                return amount
             else:
                 raise Exception("Transaksi gagal (status != 1)")
 
@@ -205,6 +229,18 @@ def send_worker(receiver, max_retries=3):
                 continue
             elif attempt == max_retries:
                 cancel_transaction(nonce)
+    return 0
+
+
+def show_sender_balance():
+    balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
+    table = Table(title="Saldo Pengirim", show_header=True, header_style="bold magenta")
+    table.add_column("Alamat", style="cyan")
+    table.add_column("Token", style="green")
+    table.add_row(SENDER_ADDRESS, f"{balance:.4f}")
+    console.print(table)
+    return balance
+
 
 def show_countdown_to_tomorrow():
     tz = pytz.timezone("Asia/Jakarta")
@@ -220,15 +256,31 @@ def show_countdown_to_tomorrow():
 
 if __name__ == "__main__":
     console.print(Panel("[bold cyan]🚀 ERC20 Multi Sender CLI Bot[/bold cyan]", expand=False))
+    show_sender_balance()
+
     selection_mode = Prompt.ask("Pilih metode pengambilan wallet", choices=["random", "sequential"], default="random")
     wallets = load_wallets(selection_mode)
+    wallets = filter_wallets_by_balance(wallets)
+
+    est_total = len(wallets) * ((MIN_TOKEN_AMOUNT + MAX_TOKEN_AMOUNT) / 2)
+    console.print(f"[yellow]📋 Wallet valid: {len(wallets)} | Estimasi total kirim: {est_total:.2f} token[/yellow]")
+
+    if est_total > MAX_TOTAL_SEND:
+        console.print(f"[red]❌ Estimasi melebihi batas MAX_TOTAL_SEND ({MAX_TOTAL_SEND}). Kurangi jumlah wallet atau token range.[/red]")
+        exit()
 
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TimeRemainingColumn(), console=console) as progress:
         task = progress.add_task("Mengirim token...", total=len(wallets))
+        total_sent = 0
         with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-            futures = [executor.submit(send_worker, wallet) for wallet in wallets]
-            for _ in as_completed(futures):
+            futures = {executor.submit(send_worker, wallet): wallet for wallet in wallets}
+            for future in as_completed(futures):
+                amount = future.result()
+                total_sent += amount
                 progress.update(task, advance=1)
+                if total_sent >= MAX_TOTAL_SEND:
+                    console.print(f"[red]⛔ Total pengiriman mencapai limit harian: {MAX_TOTAL_SEND} token.[/red]")
+                    break
 
-    console.print(Panel("[green]✅ Pengiriman selesai. Bot akan dijadwalkan ulang untuk esok hari.[/green]", expand=False))
+    console.print(Panel(f"[green]✅ Pengiriman selesai. Total dikirim: {total_sent:.2f} token[/green]", expand=False))
     show_countdown_to_tomorrow()
