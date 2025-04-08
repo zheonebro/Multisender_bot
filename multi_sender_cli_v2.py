@@ -76,7 +76,7 @@ TOKEN_CONTRACT_RAW = os.getenv("TOKEN_CONTRACT")
 MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "100"))
 EXPLORER_URL = "https://sepolia.tea.xyz/tx/"
 
-MAX_THREADS = int(os.getenv("MAX_THREADS", 5))
+MAX_THREADS = 1  # Single thread untuk menghindari konflik nonce
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 10))
 IDLE_SECONDS = int(os.getenv("IDLE_SECONDS", 30))
 MIN_TOKEN_AMOUNT = 10.0
@@ -143,7 +143,6 @@ TOKEN_DECIMALS = token_contract.functions.decimals().call()
 # Global Rate Limiting State
 rate_limit_lock = threading.Lock()
 last_sent_time = 0
-nonce_lock = threading.Lock()
 
 failed_addresses = []  # Untuk retry manual
 
@@ -154,12 +153,33 @@ def get_sepolia_tea_gas_price(multiplier=1.0):
         response = requests.get(url, timeout=5)
         response.raise_for_status()
         data = response.json()
-        gas_price_gwei = float(data.get("fast", 0)) * 1.2 * multiplier  # Multiplier untuk penggantian
+        gas_price_gwei = float(data.get("fast", 0)) * 1.2 * multiplier
         return min(gas_price_gwei, MAX_GAS_PRICE_GWEI)
     except requests.RequestException as e:
         logger.error(f"❌ Gagal mengambil gas price dari Sepolia TEA: {e}")
         network_gas_price = w3.eth.gas_price / 10**9 * 1.2 * multiplier
         return min(network_gas_price, MAX_GAS_PRICE_GWEI)
+
+# Fungsi Pembatalan Transaksi
+def cancel_transaction(tx_hash, nonce):
+    cancel_tx = {
+        'from': SENDER_ADDRESS,
+        'to': SENDER_ADDRESS,
+        'value': 0,
+        'nonce': nonce,
+        'gas': 21000,
+        'gasPrice': w3.to_wei(get_sepolia_tea_gas_price(multiplier=2.0), 'gwei')  # Gas 2x lebih tinggi
+    }
+    signed_cancel_tx = w3.eth.account.sign_transaction(cancel_tx, PRIVATE_KEY)
+    try:
+        cancel_hash = w3.eth.send_raw_transaction(signed_cancel_tx.raw_transaction)
+        logger.info(f"🚫 Membatalkan transaksi {tx_hash} dengan {cancel_hash.hex()}")
+        w3.eth.wait_for_transaction_receipt(cancel_hash, timeout=60)
+        logger.info(f"✅ Pembatalan {cancel_hash.hex()} dikonfirmasi")
+        return cancel_hash
+    except Exception as e:
+        logger.error(f"❌ Gagal membatalkan transaksi {tx_hash}: {e}")
+        return None
 
 def check_balance():
     balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
@@ -280,7 +300,7 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1):
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
     # Tingkatkan gas price pada percobaan berikutnya
-    gas_multiplier = 1.0 + (attempt - 1) * 0.5  # 1.0, 1.5, 2.0, dst.
+    gas_multiplier = 1.0 + (attempt - 1) * 0.5  # 1.0, 1.5, 2.0
     tea_gas_price = get_sepolia_tea_gas_price(multiplier=gas_multiplier)
     gas_price_to_use = min(tea_gas_price, MAX_GAS_PRICE_GWEI)
 
@@ -295,9 +315,10 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1):
             return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
         raise Exception(f"Gagal estimasi gas dan tidak ada alamat pengganti: {e}")
 
+    nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
     tx = token_contract.functions.transfer(to_address, scaled_amount).build_transaction({
         'from': from_address,
-        'nonce': w3.eth.get_transaction_count(SENDER_ADDRESS, "pending"),
+        'nonce': nonce,
         'gas': gas_limit,
         'gasPrice': w3.to_wei(gas_price_to_use, 'gwei')
     })
@@ -318,22 +339,35 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1):
             raise Exception(f"Transaksi gagal: Status {tx_receipt.status}")
         logger.info(f"✅ Transaksi {tx_hash.hex()} dikonfirmasi")
         return tx_hash.hex()
-    except web3.exceptions.TransactionNotFound:
-        logger.error(f"❌ Transaksi {tx_hash.hex()} tidak ditemukan di mempool")
-        raise
     except web3.exceptions.TimeExhausted:
         logger.error(f"⏰ Transaksi {tx_hash.hex()} timeout setelah 60 detik (attempt {attempt})")
-        if attempt < 3:  # Maksimum 3 percobaan dengan gas lebih tinggi
-            logger.info(f"🔄 Mencoba lagi dengan gas lebih tinggi untuk {to_address}")
-            return _send_token(to_address, amount, remaining_wallets, attempt + 1)
-        if remaining_wallets:
-            new_addr, new_amt = remaining_wallets.pop(0)
-            logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
-            return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
-        raise Exception("Timeout setelah 60 detik dan tidak ada alamat pengganti")
+        cancel_hash = cancel_transaction(tx_hash.hex(), nonce)
+        if cancel_hash:
+            logger.info(f"✅ Transaksi lama dibatalkan, lanjut ke alamat berikutnya")
+            if remaining_wallets:
+                new_addr, new_amt = remaining_wallets.pop(0)
+                logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
+                return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
+            raise Exception("Timeout dan tidak ada alamat pengganti")
+        else:
+            logger.error(f"❌ Gagal membatalkan transaksi {tx_hash.hex()}, mencoba lagi dengan gas lebih tinggi")
+            if attempt < 3:
+                return _send_token(to_address, amount, remaining_wallets, attempt + 1)
+            if remaining_wallets:
+                new_addr, new_amt = remaining_wallets.pop(0)
+                logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
+                return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
+            raise Exception("Timeout dan gagal membatalkan transaksi")
     except ValueError as e:
         if "replacement transaction underpriced" in str(e):
             logger.error(f"❌ Replacement underpriced untuk {tx_hash.hex()} (attempt {attempt})")
+            cancel_hash = cancel_transaction(tx_hash.hex(), nonce)
+            if cancel_hash:
+                logger.info(f"✅ Transaksi lama dibatalkan, lanjut ke alamat berikutnya")
+                if remaining_wallets:
+                    new_addr, new_amt = remaining_wallets.pop(0)
+                    logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
+                    return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
             if attempt < 3:
                 logger.info(f"🔄 Mencoba lagi dengan gas lebih tinggi untuk {to_address}")
                 return _send_token(to_address, amount, remaining_wallets, attempt + 1)
