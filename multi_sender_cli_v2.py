@@ -10,10 +10,9 @@ import csv
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, SpinnerColumn
-from rich.prompt import Prompt
-from rich.text import Text
-from rich.table import Table
 from rich.live import Live
+from rich.text import Text
+from rich import box
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Semaphore, Lock
 
@@ -86,7 +85,7 @@ TOKEN_ABI = [
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=TOKEN_ABI)
 TOKEN_DECIMALS = token_contract.functions.decimals().call()
 
-MAX_THREADS = 2  # Dikurangi untuk mengurangi konflik
+MAX_THREADS = 2
 RPC_SEMAPHORE = Semaphore(MAX_THREADS)
 nonce_lock = Lock()
 file_lock = Lock()
@@ -104,26 +103,14 @@ def get_next_nonce():
         return current_nonce
 
 
-def get_transaction_status_by_nonce(nonce):
-    try:
-        pending_block = w3.eth.get_block('pending', full_transactions=True)
-        for tx in pending_block.transactions:
-            if tx["from"].lower() == SENDER_ADDRESS.lower() and tx["nonce"] == nonce:
-                return "pending"
-        return "none"
-    except Exception as e:
-        logger.error(f"Gagal memeriksa status transaksi nonce {nonce}: {e}")
-        return "error"
-
-
 def get_gas_price(attempt=1, previous=None):
     try:
         latest_block = w3.eth.get_block('latest')
         base_fee = latest_block['baseFeePerGas'] / 10**9
-        multiplier = 1.5 + (attempt - 1) * 1.0  # 1.5, 2.5, 3.5
+        multiplier = 1.5 + (attempt - 1) * 1.0
         gas_price = base_fee * multiplier
         if previous and gas_price <= previous:
-            gas_price = previous * 1.2  # Minimal 20% lebih tinggi
+            gas_price = previous * 1.2
         return min(gas_price, MAX_GAS_PRICE_GWEI)
     except Exception as e:
         logger.error(f"❌ Gagal mengambil harga gas: {e}")
@@ -133,7 +120,7 @@ def get_gas_price(attempt=1, previous=None):
 def cancel_transaction(nonce, max_attempts=3):
     for attempt in range(1, max_attempts + 1):
         try:
-            gas_price = get_gas_price(attempt * 2)  # Gas lebih tinggi untuk pembatalan
+            gas_price = get_gas_price(attempt * 2)
             tx = {
                 'from': SENDER_ADDRESS,
                 'to': SENDER_ADDRESS,
@@ -230,59 +217,126 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
     return 0
 
 
-if __name__ == "__main__":
-    console.print(Panel("[bold cyan]🚀 Memulai pengiriman token...[/bold cyan]"))
-
-    sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
-    logger.info(f"Saldo pengirim awal: {sender_balance} token")
-    if sender_balance < MAX_TOTAL_SEND:
-        logger.error(f"❌ Saldo pengirim tidak cukup: {sender_balance} < {MAX_TOTAL_SEND}")
-        console.print(f"[red]❌ Saldo pengirim tidak cukup: {sender_balance} < {MAX_TOTAL_SEND}[/red]")
-        exit()
-
+def check_daily_quota():
+    today = datetime.now(JAKARTA_TZ).date()
     sent_wallets = set()
     if os.path.exists(SENT_FILE):
         with open(SENT_FILE, "r") as f:
-            sent_wallets = set(line.strip() for line in f.readlines())
+            for line in f:
+                wallet, timestamp = line.strip().split("|") if "|" in line else (line.strip(), "1970-01-01")
+                if datetime.strptime(timestamp, "%Y-%m-%d").date() == today:
+                    sent_wallets.add(wallet)
+    return len(sent_wallets) >= DAILY_WALLET_LIMIT, len(sent_wallets)
 
-    with open(CSV_FILE, "r") as f:
-        reader = csv.reader(f)
-        wallets = [
-            line[0].strip()
-            for line in reader
-            if line and Web3.is_address(line[0].strip()) and line[0].strip() not in sent_wallets
-        ]
-        if not wallets:
-            logger.error("❌ Tidak ada alamat dompet yang valid di wallets.csv")
-            console.print("[red]❌ Tidak ada alamat dompet yang valid di wallets.csv[/red]")
+
+def get_next_reset_time():
+    now = datetime.now(JAKARTA_TZ)
+    next_day = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    return next_day
+
+
+def countdown_to_next_day():
+    next_reset = get_next_reset_time()
+    with Live(console=console, refresh_per_second=4) as live:
+        while True:
+            now = datetime.now(JAKARTA_TZ)
+            time_left = next_reset - now
+            if time_left.total_seconds() <= 0:
+                break
+
+            hours, remainder = divmod(int(time_left.total_seconds()), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            frames = ["⏳", "⌛", "⏰", "⏲️"]
+            frame = frames[int(time.time() * 4) % 4]
+
+            countdown_text = Text(f"{frame} Menunggu pengiriman berikutnya dalam: {hours:02d}:{minutes:02d}:{seconds:02d}", style="bold cyan")
+            panel = Panel(
+                countdown_text,
+                title="⏱️ Countdown Pengiriman Harian",
+                border_style="green",
+                box=box.ROUNDED,
+                padding=(1, 2)
+            )
+            live.update(panel)
+            time.sleep(0.25)
+
+    console.print("[bold green]⏰ Waktu reset tercapai! Memulai pengiriman baru...[/bold green]")
+
+
+if __name__ == "__main__":
+    while True:
+        console.print(Panel("[bold cyan]🚀 Memulai pengiriman token...[/bold cyan]"))
+
+        # Cek kuota harian
+        quota_full, sent_count = check_daily_quota()
+        logger.info(f"Memeriksa kuota harian: {sent_count}/{DAILY_WALLET_LIMIT} dompet telah diproses hari ini")
+        if quota_full:
+            console.print(f"[yellow]⚠️ Kuota harian ({DAILY_WALLET_LIMIT} dompet) telah tercapai![/yellow]")
+            logger.info(f"Kuota harian tercapai ({sent_count}/{DAILY_WALLET_LIMIT}). Menunggu reset harian berikutnya.")
+            countdown_to_next_day()
+            continue
+
+        sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
+        logger.info(f"Saldo pengirim awal: {sender_balance} token")
+        if sender_balance < MAX_TOTAL_SEND:
+            logger.error(f"❌ Saldo pengirim tidak cukup: {sender_balance} < {MAX_TOTAL_SEND}")
+            console.print(f"[red]❌ Saldo pengirim tidak cukup: {sender_balance} < {MAX_TOTAL_SEND}[/red]")
             exit()
-    logger.info(f"Jumlah dompet yang akan diproses: {min(len(wallets), DAILY_WALLET_LIMIT)}")
 
-    random.shuffle(wallets)
-    total_sent = 0
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("{task.completed}/{task.total}"),
-        TimeRemainingColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Mengirim token...", total=min(len(wallets), DAILY_WALLET_LIMIT))
-        with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-            futures = []
-            for receiver in wallets[:DAILY_WALLET_LIMIT]:
-                if total_sent >= MAX_TOTAL_SEND:
-                    logger.warning("⚠️ Batas maksimum total pengiriman tercapai")
-                    break
-                futures.append(executor.submit(send_worker, receiver, get_next_nonce))
-            for future in as_completed(futures):
-                sent = future.result()
-                total_sent += sent
-                sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
-                logger.info(f"Progres sementara: Total token dikirim = {total_sent} | Saldo pengirim tersisa: {sender_balance} token")
-                progress.advance(task)
-                time.sleep(0.3)
+        sent_wallets = set()
+        if os.path.exists(SENT_FILE):
+            with open(SENT_FILE, "r") as f:
+                for line in f:
+                    wallet, timestamp = line.strip().split("|") if "|" in line else (line.strip(), "1970-01-01")
+                    sent_wallets.add(wallet)
 
-    logger.info(f"Selesai! Total token dikirim: {total_sent}")
-    console.print(Panel(f"[green]✅ Selesai! Total token dikirim: {total_sent}[/green]"))
+        with open(CSV_FILE, "r") as f:
+            reader = csv.reader(f)
+            wallets = [
+                line[0].strip()
+                for line in reader
+                if line and Web3.is_address(line[0].strip()) and line[0].strip() not in sent_wallets
+            ]
+            if not wallets:
+                logger.error("❌ Tidak ada alamat dompet yang valid di wallets.csv")
+                console.print("[red]❌ Tidak ada alamat dompet yang valid di wallets.csv[/red]")
+                exit()
+        logger.info(f"Jumlah dompet yang akan diproses: {min(len(wallets), DAILY_WALLET_LIMIT - sent_count)}")
+
+        random.shuffle(wallets)
+        total_sent = 0
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Mengirim token...", total=min(len(wallets), DAILY_WALLET_LIMIT - sent_count))
+            with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+                futures = []
+                for receiver in wallets[:DAILY_WALLET_LIMIT - sent_count]:
+                    if total_sent >= MAX_TOTAL_SEND:
+                        logger.warning("⚠️ Batas maksimum total pengiriman tercapai")
+                        break
+                    futures.append(executor.submit(send_worker, receiver, get_next_nonce))
+                for future in as_completed(futures):
+                    sent = future.result()
+                    total_sent += sent
+                    sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
+                    logger.info(f"Progres sementara: Total token dikirim = {total_sent} | Saldo pengirim tersisa: {sender_balance} token")
+                    with file_lock:
+                        with open(SENT_FILE, "a") as f:
+                            f.write(f"{receiver}|{datetime.now(JAKARTA_TZ).strftime('%Y-%m-%d')}\n")
+                    progress.advance(task)
+                    time.sleep(0.3)
+
+        logger.info(f"Selesai! Total token dikirim: {total_sent}")
+        console.print(Panel(f"[green]✅ Selesai! Total token dikirim: {total_sent}[/green]"))
+
+        # Jadwalkan untuk hari esok
+        next_reset = get_next_reset_time()
+        console.print(f"[cyan]📅 Pengiriman berikutnya dijadwalkan pada: {next_reset.strftime('%Y-%m-%d %H:%M:%S %Z')}[/cyan]")
+        logger.info(f"Pengiriman berikutnya dijadwalkan pada: {next_reset}")
+        countdown_to_next_day()
