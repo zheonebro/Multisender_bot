@@ -10,6 +10,7 @@ import csv
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
+from rich.prompt import IntPrompt
 
 # Setup logging
 logging.basicConfig(
@@ -27,7 +28,7 @@ PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 SENDER_ADDRESS = Web3.to_checksum_address(os.getenv("SENDER_ADDRESS"))
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_ADDRESS = Web3.to_checksum_address(os.getenv("TOKEN_CONTRACT"))
-MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "200"))
+MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "1000"))
 
 MIN_TOKEN_AMOUNT = 10.0
 MAX_TOKEN_AMOUNT = 50.0
@@ -52,38 +53,56 @@ TOKEN_ABI = [
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=TOKEN_ABI)
 TOKEN_DECIMALS = token_contract.functions.decimals().call()
 
-def get_gas_price(multiplier=2.5, previous=None):
-    """Ambil gas price dari jaringan atau TEA, dengan batas maksimum."""
+def get_gas_price(multiplier=5.0, previous=None):
     try:
         gas_price = w3.eth.gas_price / 10**9 * multiplier
         if previous and gas_price <= previous:
-            gas_price = previous * 2.0
+            gas_price = previous * 1.5
         return min(gas_price, MAX_GAS_PRICE_GWEI)
     except Exception as e:
         logger.error(f"❌ Gagal ambil gas price: {e}")
         return MAX_GAS_PRICE_GWEI
 
 def cancel_transaction(nonce):
-    """Batalkan transaksi pending dengan nonce tertentu."""
     try:
-        tx = {'from': SENDER_ADDRESS, 'to': SENDER_ADDRESS, 'value': 0, 'nonce': nonce, 'gas': 21000, 'gasPrice': w3.to_wei(get_gas_price(multiplier=15.0), 'gwei'), 'chainId': w3.eth.chain_id}
+        high_gas_price = get_gas_price(multiplier=20.0)
+        tx = {
+            'from': SENDER_ADDRESS,
+            'to': SENDER_ADDRESS,
+            'value': 0,
+            'nonce': nonce,
+            'gas': 21000,
+            'gasPrice': w3.to_wei(high_gas_price, 'gwei'),
+            'chainId': w3.eth.chain_id
+        }
         signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
         tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-        w3.eth.wait_for_transaction_receipt(tx_hash, timeout=15)
-        logger.info(f"✅ Transaksi nonce {nonce} dibatalkan: {tx_hash.hex()}")
+        console.print(f"[yellow]🚫 Membatalkan nonce {nonce} dengan gas {high_gas_price:.1f} Gwei: [bold]{tx_hash.hex()[:8]}...[/bold][/yellow]")
+        logger.info(f"🚫 Membatalkan nonce {nonce} dengan gas {high_gas_price:.1f} Gwei: {tx_hash.hex()}")
+        w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
+        console.print(f"[green]✅ Nonce {nonce} berhasil dibatalkan: {tx_hash.hex()[:8]}...[/green]")
         return tx_hash
     except Exception as e:
         logger.error(f"❌ Gagal membatalkan nonce {nonce}: {e}")
+        console.print(f"[red]❌ Gagal membatalkan nonce {nonce}: {e}[/red]")
         return None
 
+def cancel_pending_transactions(start_nonce, end_nonce):
+    """Batalkan rentang nonce tertentu."""
+    for nonce in range(start_nonce, end_nonce + 1):
+        cancel_transaction(nonce)
+
 def _send_token(to_address, amount, max_attempts=3):
-    """Kirim token ke alamat dengan retry jika gagal."""
     to_address = Web3.to_checksum_address(to_address)
     scaled_amount = int(amount * 10**TOKEN_DECIMALS)
-    nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
+    pending_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
+    latest_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "latest")
+    nonce = max(pending_nonce, latest_nonce)
+    logger.info(f"ℹ️ Nonce untuk {to_address[:8]}...: Pending={pending_nonce}, Latest={latest_nonce}, Used={nonce}")
 
+    timeout_count = 0
     for attempt in range(1, max_attempts + 1):
-        gas_price = get_gas_price(multiplier=2.5 + (attempt - 1) * 2.0)
+        gas_price = get_gas_price(multiplier=5.0 + (attempt - 1) * 5.0)
         try:
             gas_limit = int(token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': SENDER_ADDRESS}) * 2.0)
             tx = token_contract.functions.transfer(to_address, scaled_amount).build_transaction({
@@ -93,9 +112,10 @@ def _send_token(to_address, amount, max_attempts=3):
             start_time = time.time()
             tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
             console.print(f"[cyan]📤 Mengirim ke {to_address[:8]}...: [bold]{tx_hash.hex()[:8]}...[/bold] (Gas: {gas_price:.1f} Gwei, Attempt {attempt})")
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
             if receipt.status == 1:
                 confirm_time = time.time() - start_time
+                timeout_count = 0
                 return tx_hash.hex(), receipt.gasUsed, confirm_time
             logger.error(f"❌ Transaksi {tx_hash.hex()} gagal: Status {receipt.status}")
             return None, 0, 0
@@ -106,15 +126,25 @@ def _send_token(to_address, amount, max_attempts=3):
                 cancel_transaction(nonce)
             elif "TimeExhausted" in error_msg:
                 console.print(f"[yellow]⏰ Timeout ke {to_address[:8]}... (attempt {attempt})[/yellow]")
+                timeout_count += 1
+                cancel_hash = cancel_transaction(nonce)
+                if cancel_hash:
+                    nonce += 1
+                if timeout_count >= 2:
+                    console.print(f"[red]❌ Timeout berturut-turut ({timeout_count}x) untuk {to_address[:8]}...[/red]")
+                    return None, 0, 0
+            elif "already known" in error_msg:
+                console.print(f"[yellow]⚠️ Transaksi sudah ada di mempool untuk {to_address[:8]}... (attempt {attempt})[/yellow]")
                 cancel_transaction(nonce)
+                nonce += 1
             else:
                 console.print(f"[red]❌ Error ke {to_address[:8]}...: {error_msg[:50]}...[/red]")
             if attempt == max_attempts:
+                console.print(f"[red]❌ Maksimum attempt tercapai untuk {to_address[:8]}...[/red]")
                 return None, 0, 0
-            time.sleep(1)
+            time.sleep(2)
 
 def send_token(to_address, amount):
-    """Wrapper untuk mengirim token dan log hasil."""
     tx_hash, gas_used, confirm_time = _send_token(to_address, amount)
     status = "SUCCESS" if tx_hash else "FAILED"
     with open(TRANSACTION_LOG, "a") as f:
@@ -128,7 +158,6 @@ def send_token(to_address, amount):
     return False, 0
 
 def load_random_wallets(limit=DAILY_WALLET_LIMIT):
-    """Muat dan acak daftar wallet dari wallets.csv."""
     wallets = []
     try:
         with open(CSV_FILE, "r") as f:
@@ -139,7 +168,7 @@ def load_random_wallets(limit=DAILY_WALLET_LIMIT):
                     wallets.append(addr)
         if not wallets:
             raise ValueError("Tidak ada alamat valid di wallets.csv")
-        random.shuffle(wallets)  # Acak daftar alamat
+        random.shuffle(wallets)
         selected_wallets = wallets[:limit]
         return [(addr, random.uniform(MIN_TOKEN_AMOUNT, MAX_TOKEN_AMOUNT)) for addr in selected_wallets]
     except Exception as e:
@@ -148,9 +177,25 @@ def load_random_wallets(limit=DAILY_WALLET_LIMIT):
         return []
 
 def main():
-    """Fungsi utama untuk mengirim token ke 200 alamat acak dari wallets.csv."""
     console.print(Panel("🚀 TEA Sepolia Sender Bot", style="bold cyan", border_style="green"))
     os.makedirs("runtime_logs", exist_ok=True)
+
+    # Tampilkan status nonce
+    pending_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
+    latest_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "latest")
+    console.print(f"[blue]ℹ️ Status Nonce: Pending={pending_nonce}, Latest={latest_nonce}[/blue]")
+
+    # Tanya pengguna apakah ingin membatalkan nonce
+    choice = IntPrompt.ask("[yellow]⚙️ Apakah ingin membatalkan transaksi pending? (1 = Ya, 0 = Tidak)[/yellow]", default=0, choices=["0", "1"])
+    if choice == 1:
+        start_nonce = IntPrompt.ask("[cyan]Masukkan nonce awal untuk dibatalkan[/cyan]", default=latest_nonce)
+        end_nonce = IntPrompt.ask("[cyan]Masukkan nonce akhir untuk dibatalkan[/cyan]", default=pending_nonce)
+        if start_nonce <= end_nonce:
+            console.print(f"[blue]ℹ️ Membatalkan nonce dari {start_nonce} hingga {end_nonce}[/blue]")
+            cancel_pending_transactions(start_nonce, end_nonce)
+        else:
+            console.print("[red]❌ Nonce awal harus lebih kecil atau sama dengan nonce akhir[/red]")
+
     if os.path.exists(SENT_FILE):
         os.remove(SENT_FILE)
     
