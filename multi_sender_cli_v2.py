@@ -11,7 +11,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich import box
 import web3
-import tenacity
 import schedule
 import pytz
 import sys
@@ -146,20 +145,20 @@ rate_limit_lock = threading.Lock()
 last_sent_time = 0
 nonce_lock = threading.Lock()
 
-failed_addresses = []  # Untuk retry manual, tidak direset harian
+failed_addresses = []  # Untuk retry manual
 
 # Fungsi Gas Price
-def get_sepolia_tea_gas_price():
+def get_sepolia_tea_gas_price(multiplier=1.0):
     url = "https://sepolia.tea.xyz/api/v1/gas-price-oracle"
     try:
         response = requests.get(url, timeout=5)
         response.raise_for_status()
         data = response.json()
-        gas_price_gwei = float(data.get("fast", 0)) * 1.2
+        gas_price_gwei = float(data.get("fast", 0)) * 1.2 * multiplier  # Multiplier untuk penggantian
         return min(gas_price_gwei, MAX_GAS_PRICE_GWEI)
     except requests.RequestException as e:
         logger.error(f"❌ Gagal mengambil gas price dari Sepolia TEA: {e}")
-        network_gas_price = w3.eth.gas_price / 10**9 * 1.2
+        network_gas_price = w3.eth.gas_price / 10**9 * 1.2 * multiplier
         return min(network_gas_price, MAX_GAS_PRICE_GWEI)
 
 def check_balance():
@@ -275,23 +274,25 @@ def check_logs():
     else:
         console.print("[bold red]❌ Pilihan tidak valid![/bold red]")
 
-def _send_token(to_address, amount, remaining_wallets):
+def _send_token(to_address, amount, remaining_wallets, attempt=1):
     from_address = SENDER_ADDRESS
     to_address = web3.Web3.to_checksum_address(to_address)
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
 
-    tea_gas_price = get_sepolia_tea_gas_price()
+    # Tingkatkan gas price pada percobaan berikutnya
+    gas_multiplier = 1.0 + (attempt - 1) * 0.5  # 1.0, 1.5, 2.0, dst.
+    tea_gas_price = get_sepolia_tea_gas_price(multiplier=gas_multiplier)
     gas_price_to_use = min(tea_gas_price, MAX_GAS_PRICE_GWEI)
 
     try:
         gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
         gas_limit = int(gas_estimate * 1.5)
     except Exception as e:
-        logger.error(f"❌ Gagal mengestimasi gas untuk {to_address}: {e}")
+        logger.error(f"❌ Gagal mengestimasi gas untuk {to_address} (attempt {attempt}): {e}")
         if remaining_wallets:
             new_addr, new_amt = remaining_wallets.pop(0)
             logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
-            return _send_token(new_addr, new_amt, remaining_wallets)
+            return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
         raise Exception(f"Gagal estimasi gas dan tidak ada alamat pengganti: {e}")
 
     tx = token_contract.functions.transfer(to_address, scaled_amount).build_transaction({
@@ -301,29 +302,47 @@ def _send_token(to_address, amount, remaining_wallets):
         'gasPrice': w3.to_wei(gas_price_to_use, 'gwei')
     })
 
-    logger.info(f"ℹ️ Tx Details: {tx}")
+    logger.info(f"ℹ️ Tx Details (attempt {attempt}): {tx}")
     signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-    logger.info(f"📤 Transaksi dikirim: {tx_hash.hex()}")
-
     try:
-        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)  # 1 menit
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        logger.info(f"📤 Transaksi dikirim: {tx_hash.hex()}")
+
+        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
         if tx_receipt.status != 1:
             logger.error(f"❌ Transaksi {tx_hash.hex()} gagal di chain: Status {tx_receipt.status}")
             if remaining_wallets:
                 new_addr, new_amt = remaining_wallets.pop(0)
                 logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
-                return _send_token(new_addr, new_amt, remaining_wallets)
+                return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
             raise Exception(f"Transaksi gagal: Status {tx_receipt.status}")
         logger.info(f"✅ Transaksi {tx_hash.hex()} dikonfirmasi")
         return tx_hash.hex()
+    except web3.exceptions.TransactionNotFound:
+        logger.error(f"❌ Transaksi {tx_hash.hex()} tidak ditemukan di mempool")
+        raise
     except web3.exceptions.TimeExhausted:
-        logger.error(f"⏰ Transaksi {tx_hash.hex()} tidak dikonfirmasi setelah 60 detik")
+        logger.error(f"⏰ Transaksi {tx_hash.hex()} timeout setelah 60 detik (attempt {attempt})")
+        if attempt < 3:  # Maksimum 3 percobaan dengan gas lebih tinggi
+            logger.info(f"🔄 Mencoba lagi dengan gas lebih tinggi untuk {to_address}")
+            return _send_token(to_address, amount, remaining_wallets, attempt + 1)
         if remaining_wallets:
             new_addr, new_amt = remaining_wallets.pop(0)
             logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
-            return _send_token(new_addr, new_amt, remaining_wallets)
+            return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
         raise Exception("Timeout setelah 60 detik dan tidak ada alamat pengganti")
+    except ValueError as e:
+        if "replacement transaction underpriced" in str(e):
+            logger.error(f"❌ Replacement underpriced untuk {tx_hash.hex()} (attempt {attempt})")
+            if attempt < 3:
+                logger.info(f"🔄 Mencoba lagi dengan gas lebih tinggi untuk {to_address}")
+                return _send_token(to_address, amount, remaining_wallets, attempt + 1)
+            if remaining_wallets:
+                new_addr, new_amt = remaining_wallets.pop(0)
+                logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
+                return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
+            raise Exception("Replacement underpriced dan tidak ada alamat pengganti")
+        raise
 
 def send_token_threadsafe(to_address, amount, remaining_wallets):
     try:
@@ -357,7 +376,7 @@ def send_token_batch(wallets, randomize=False):
         random.shuffle(wallets)
         logger.info("🔀 Daftar wallet diacak untuk pengiriman acak.")
     total_wallets_sent = 0
-    remaining_wallets = wallets.copy()  # Salinan untuk penggantian
+    remaining_wallets = wallets.copy()
 
     for i in range(0, len(wallets), BATCH_SIZE):
         batch = wallets[i:i + BATCH_SIZE]
@@ -417,7 +436,7 @@ def retry_failed_addresses():
     logger.info(f"🔄 Mencoba ulang {len(failed_addresses)} alamat yang gagal...")
     success = send_token_batch(failed_addresses)
     if success:
-        failed_addresses = []  # Kosongkan setelah berhasil
+        failed_addresses = []
 
 def get_next_schedule_time():
     now = datetime.now(JAKARTA_TZ)
