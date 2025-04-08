@@ -89,8 +89,16 @@ def cancel_transaction(nonce):
 
 def cancel_pending_transactions(start_nonce, end_nonce):
     """Batalkan rentang nonce tertentu."""
-    for nonce in range(start_nonce, end_nonce + 1):
-        cancel_transaction(nonce)
+    with Progress(
+        TextColumn("[bold yellow]Membatalkan transaksi pending..."),
+        BarColumn(),
+        TextColumn("{task.percentage:>3.0f}%"),
+        TimeRemainingColumn()
+    ) as progress:
+        task = progress.add_task("", total=end_nonce - start_nonce + 1)
+        for nonce in range(start_nonce, end_nonce + 1):
+            cancel_transaction(nonce)
+            progress.advance(task)
 
 def _send_token(to_address, amount, max_attempts=3):
     to_address = Web3.to_checksum_address(to_address)
@@ -176,25 +184,32 @@ def load_random_wallets(limit=DAILY_WALLET_LIMIT):
         console.print(f"[red]❌ Gagal memuat wallets.csv: {e}[/red]")
         return []
 
+def check_pending_transactions():
+    """Periksa jumlah transaksi pending dan kembalikan jumlahnya."""
+    pending_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
+    latest_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "latest")
+    pending_count = pending_nonce - latest_nonce
+    return pending_count, latest_nonce, pending_nonce
+
 def main():
     console.print(Panel("🚀 TEA Sepolia Sender Bot", style="bold cyan", border_style="green"))
     os.makedirs("runtime_logs", exist_ok=True)
 
-    # Tampilkan status nonce
-    pending_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
-    latest_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "latest")
+    # Periksa transaksi pending
+    pending_count, latest_nonce, pending_nonce = check_pending_transactions()
     console.print(f"[blue]ℹ️ Status Nonce: Pending={pending_nonce}, Latest={latest_nonce}[/blue]")
-
-    # Tanya pengguna apakah ingin membatalkan nonce
-    choice = IntPrompt.ask("[yellow]⚙️ Apakah ingin membatalkan transaksi pending? (1 = Ya, 0 = Tidak)[/yellow]", default=0, choices=["0", "1"])
-    if choice == 1:
-        start_nonce = IntPrompt.ask("[cyan]Masukkan nonce awal untuk dibatalkan[/cyan]", default=latest_nonce)
-        end_nonce = IntPrompt.ask("[cyan]Masukkan nonce akhir untuk dibatalkan[/cyan]", default=pending_nonce)
-        if start_nonce <= end_nonce:
-            console.print(f"[blue]ℹ️ Membatalkan nonce dari {start_nonce} hingga {end_nonce}[/blue]")
-            cancel_pending_transactions(start_nonce, end_nonce)
+    
+    if pending_count > 0:
+        console.print(f"[yellow]⚠️ Terdeteksi {pending_count} transaksi pending di mempool[/yellow]")
+        choice = IntPrompt.ask("[yellow]⚙️ Batalkan semua transaksi pending? (1 = Ya, 0 = Tidak)[/yellow]", default=0, choices=["0", "1"])
+        if choice == 1:
+            console.print(f"[blue]ℹ️ Membatalkan {pending_count} transaksi pending (nonce {latest_nonce} hingga {pending_nonce - 1})[/blue]")
+            cancel_pending_transactions(latest_nonce, pending_nonce - 1)
+            console.print("[green]✅ Semua transaksi pending telah dibatalkan[/green]")
         else:
-            console.print("[red]❌ Nonce awal harus lebih kecil atau sama dengan nonce akhir[/red]")
+            console.print("[blue]ℹ️ Melanjutkan pengiriman dengan transaksi pending[/blue]")
+    else:
+        console.print("[green]✅ Tidak ada transaksi pending di mempool[/green]")
 
     if os.path.exists(SENT_FILE):
         os.remove(SENT_FILE)
