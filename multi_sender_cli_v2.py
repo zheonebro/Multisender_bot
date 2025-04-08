@@ -157,6 +157,43 @@ def load_wallets(mode="random"):
 
     return remaining_wallets[:DAILY_WALLET_LIMIT]
 
+def send_worker(receiver):
+    try:
+        amount = round(random.uniform(MIN_TOKEN_AMOUNT, MAX_TOKEN_AMOUNT), 4)
+        token_amount = int(amount * (10 ** TOKEN_DECIMALS))
+        nonce = get_next_nonce()
+        gas_price = get_gas_price()
+
+        tx = token_contract.functions.transfer(receiver, token_amount).build_transaction({
+            'from': SENDER_ADDRESS,
+            'nonce': nonce,
+            'gas': 100000,
+            'gasPrice': w3.to_wei(gas_price, 'gwei'),
+            'chainId': w3.eth.chain_id
+        })
+
+        signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+
+        if receipt.status == 1:
+            msg = f"✅ Berhasil kirim {amount} token ke {receiver} | TX: {tx_hash.hex()}"
+            logger.info(msg)
+            console.print(msg)
+            with open(SENT_FILE, "a") as f:
+                f.write(f"{receiver}\n")
+            with open(TRANSACTION_LOG, "a") as logf:
+                logf.write(f"{datetime.now(pytz.timezone('Asia/Jakarta'))} | {receiver} | {amount} | {tx_hash.hex()}\n")
+        else:
+            raise Exception("Transaksi gagal (status != 1)")
+
+    except Exception as e:
+        logger.error(f"❌ Gagal kirim ke {receiver}: {e}")
+        console.print(f"[red]❌ Gagal kirim ke {receiver}: {e}[/red]")
+        if "replacement transaction underpriced" in str(e) or "nonce too low" in str(e):
+            time.sleep(3)
+            cancel_transaction(nonce)
+
 def countdown_timer():
     tz = pytz.timezone('Asia/Jakarta')
     now = datetime.now(tz)
@@ -192,10 +229,9 @@ def show_intro():
     console.print("\n")
 
 def show_status_info():
-    # Pastikan file sent_wallets.txt ada
     if not os.path.exists(SENT_FILE):
         with open(SENT_FILE, "w") as f:
-            pass  # Buat file kosong
+            pass
 
     balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / 10**TOKEN_DECIMALS
     sent_today = len(open(SENT_FILE).readlines())
