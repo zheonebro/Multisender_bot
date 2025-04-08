@@ -179,6 +179,11 @@ def show_intro():
 
 
 def show_status_info():
+    # Pastikan file sent_wallets.txt ada
+    if not os.path.exists(SENT_FILE):
+        with open(SENT_FILE, "w") as f:
+            pass  # Buat file kosong
+
     balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / 10**TOKEN_DECIMALS
     sent_today = len(open(SENT_FILE).readlines())
     table = Table(title="📊 Status Wallet")
