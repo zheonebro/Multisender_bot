@@ -75,7 +75,7 @@ TOKEN_CONTRACT_RAW = os.getenv("TOKEN_CONTRACT")
 MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "100"))
 EXPLORER_URL = "https://sepolia.tea.xyz/tx/"
 
-IDLE_SECONDS = int(os.getenv("IDLE_SECONDS", 60))  # Jeda antar pengiriman
+IDLE_SECONDS = int(os.getenv("IDLE_SECONDS", 5))  # Jeda antar pengiriman dikurangi ke 5 detik
 MIN_TOKEN_AMOUNT = 10.0
 MAX_TOKEN_AMOUNT = 50.0
 DAILY_WALLET_LIMIT = int(os.getenv("DAILY_WALLET_LIMIT", 200))  # Maksimum 200 wallet per hari
@@ -340,7 +340,6 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
         cancel_hash = cancel_transaction(tx_hash.hex(), nonce)
         if cancel_hash:
             logger.info(f"✅ Transaksi lama dibatalkan, lanjut ke alamat berikutnya")
-            time.sleep(10)
             if remaining_wallets:
                 new_addr, new_amt = remaining_wallets.pop(0)
                 logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
@@ -348,7 +347,7 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
             raise Exception("Timeout dan tidak ada alamat pengganti")
         else:
             logger.error(f"❌ Gagal membatalkan transaksi {tx_hash.hex()}, tunggu hingga drop")
-            time.sleep(300)
+            time.sleep(60)  # Dikurangi dari 300 detik ke 60 detik
             updated_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
             if updated_nonce > nonce:
                 logger.info(f"✅ Transaksi lama di-drop atau dikonfirmasi, lanjut ke alamat berikutnya")
@@ -370,14 +369,13 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
             cancel_hash = cancel_transaction(tx_hash.hex(), nonce)
             if cancel_hash:
                 logger.info(f"✅ Transaksi lama dibatalkan, lanjut ke alamat berikutnya")
-                time.sleep(10)
                 if remaining_wallets:
                     new_addr, new_amt = remaining_wallets.pop(0)
                     logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
                     return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
             else:
                 logger.error(f"❌ Gagal membatalkan transaksi {tx_hash.hex()}, tunggu hingga drop")
-                time.sleep(300)
+                time.sleep(60)  # Dikurangi dari 300 detik ke 60 detik
                 updated_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
                 if updated_nonce > nonce:
                     logger.info(f"✅ Transaksi lama di-drop atau dikonfirmasi, lanjut ke alamat berikutnya")
@@ -395,13 +393,13 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
             raise Exception("Replacement underpriced dan gagal membatalkan transaksi")
         elif "nonce too low" in str(e):
             logger.error(f"❌ Nonce terlalu rendah untuk {tx_hash.hex()}, sinkronisasi ulang")
-            time.sleep(10)
+            time.sleep(5)  # Dikurangi dari 10 detik ke 5 detik
             updated_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
             logger.info(f"ℹ️ Nonce diperbarui ke: {updated_nonce}")
             return _send_token(to_address, amount, remaining_wallets, attempt=1)
         elif "transaction already imported" in str(e):
             logger.error(f"❌ Transaksi {tx_hash.hex()} sudah ada di mempool, tunggu")
-            time.sleep(300)
+            time.sleep(60)  # Dikurangi dari 300 detik ke 60 detik
             updated_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
             if updated_nonce > nonce:
                 logger.info(f"✅ Transaksi lama di-drop atau dikonfirmasi")
@@ -411,7 +409,7 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
                     return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
         raise
     finally:
-        time.sleep(10)  # Jeda untuk sinkronisasi RPC
+        time.sleep(5)  # Jeda sinkronisasi dikurangi dari 10 detik ke 5 detik
 
 def send_token(to_address, amount, remaining_wallets):
     try:
