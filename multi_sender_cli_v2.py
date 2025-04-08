@@ -44,7 +44,11 @@ MAX_TOTAL_SEND = 1000  # Token
 MIN_RECEIVER_BALANCE = 0.1
 CSV_FILE = "wallets.csv"
 SENT_FILE = "sent_wallets.txt"
-TRANSACTION_LOG = f"runtime_logs/transactions_{datetime.now(pytz.timezone('Asia/Jakarta')).strftime('%Y%m%d_%H%M%S')}.log"
+
+# Tetapkan waktu log saat program mulai
+JAKARTA_TZ = pytz.timezone('Asia/Jakarta')
+START_TIME = datetime.now(JAKARTA_TZ).strftime('%Y%m%d_%H%M%S')
+TRANSACTION_LOG = f"runtime_logs/transactions_{START_TIME}.log"
 
 # Connect to Web3
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
@@ -147,40 +151,7 @@ def cancel_transaction(nonce, max_attempts=3):
     return None
 
 
-def load_wallets(mode="random"):
-    with open(CSV_FILE, newline='') as csvfile:
-        reader = csv.reader(csvfile)
-        all_wallets = [row[0].strip() for row in reader if row and Web3.is_address(row[0].strip())]
-
-    if not os.path.exists(SENT_FILE):
-        sent_wallets = set()
-    else:
-        with open(SENT_FILE) as f:
-            sent_wallets = set(line.strip() for line in f)
-
-    remaining_wallets = list(set(all_wallets) - sent_wallets)
-
-    if mode == "random":
-        random.shuffle(remaining_wallets)
-    else:
-        remaining_wallets.sort()
-
-    return remaining_wallets
-
-
-def filter_wallets_by_balance(wallets):
-    filtered = []
-    for wallet in wallets:
-        try:
-            balance = token_contract.functions.balanceOf(Web3.to_checksum_address(wallet)).call() / (10 ** TOKEN_DECIMALS)
-            if balance >= MIN_RECEIVER_BALANCE:
-                filtered.append(wallet)
-        except:
-            continue
-    return filtered[:DAILY_WALLET_LIMIT]
-
-
-def send_worker(receiver, max_retries=3):
+def send_worker(receiver, get_next_nonce_func, max_retries=3):
     receiver = Web3.to_checksum_address(receiver)
     amount = round(random.uniform(MIN_TOKEN_AMOUNT, MAX_TOKEN_AMOUNT), 4)
     token_amount = int(amount * (10 ** TOKEN_DECIMALS))
@@ -188,12 +159,14 @@ def send_worker(receiver, max_retries=3):
 
     for attempt in range(1, max_retries + 1):
         try:
-            nonce = get_next_nonce()
             base_gas = w3.eth.gas_price / 1e9
             gas_price = base_gas * (1.15 + 0.05 * (attempt - 1))
+            gas_price = max(gas_price, 30)  # minimal 30 gwei
             gas_price = min(gas_price, MAX_GAS_PRICE_GWEI)
 
+            nonce = get_next_nonce_func()
             console.print(f"[blue]🧾 TX ke {receiver} | Nonce: {nonce} | GasPrice: {gas_price:.1f} gwei[/blue]")
+            time.sleep(random.uniform(0.4, 1.2))  # Hindari race condition
 
             tx = token_contract.functions.transfer(receiver, token_amount).build_transaction({
                 'from': SENDER_ADDRESS,
@@ -206,7 +179,7 @@ def send_worker(receiver, max_retries=3):
             signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
             raw_tx = getattr(signed_tx, 'rawTransaction', getattr(signed_tx, 'raw_transaction', None))
             tx_hash = w3.eth.send_raw_transaction(raw_tx)
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
 
             if receipt.status == 1:
                 msg = f"✅ Berhasil kirim {amount} token ke {receiver} | TX: {tx_hash.hex()}"
@@ -223,64 +196,43 @@ def send_worker(receiver, max_retries=3):
         except Exception as e:
             logger.error(f"❌ Attempt {attempt} gagal kirim ke {receiver}: {e}")
             console.print(f"[red]❌ Attempt {attempt} gagal kirim ke {receiver}: {e}[/red]")
-
-            if "replacement transaction underpriced" in str(e) or "nonce too low" in str(e):
-                time.sleep(retry_delay)
-                continue
-            elif attempt == max_retries:
+            time.sleep(retry_delay)
+            if attempt == max_retries:
                 cancel_transaction(nonce)
     return 0
 
 
-def show_sender_balance():
-    balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
-    table = Table(title="Saldo Pengirim", show_header=True, header_style="bold magenta")
-    table.add_column("Alamat", style="cyan")
-    table.add_column("Token", style="green")
-    table.add_row(SENDER_ADDRESS, f"{balance:.4f}")
-    console.print(table)
-    return balance
-
-
-def show_countdown_to_tomorrow():
-    tz = pytz.timezone("Asia/Jakarta")
-    now = datetime.now(tz)
-    tomorrow = now + timedelta(days=1)
-    next_run = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 0, 0, 0, tzinfo=tz)
-    while True:
-        remaining = next_run - datetime.now(tz)
-        if remaining.total_seconds() <= 0:
-            break
-        console.print(f"[cyan]⌛ Countdown ke pengiriman esok hari: {remaining}[/cyan]", end="\r")
-        time.sleep(1)
-
 if __name__ == "__main__":
-    console.print(Panel("[bold cyan]🚀 ERC20 Multi Sender CLI Bot[/bold cyan]", expand=False))
-    show_sender_balance()
+    console.print(Panel("[bold cyan]🚀 Memulai pengiriman token...[/bold cyan]"))
+    sent_wallets = set()
+    if os.path.exists(SENT_FILE):
+        with open(SENT_FILE, "r") as f:
+            sent_wallets = set(line.strip() for line in f.readlines())
 
-    selection_mode = Prompt.ask("Pilih metode pengambilan wallet", choices=["random", "sequential"], default="random")
-    wallets = load_wallets(selection_mode)
-    wallets = filter_wallets_by_balance(wallets)
+    with open(CSV_FILE, "r") as f:
+        reader = csv.reader(f)
+        wallets = [line[0].strip() for line in reader if line and line[0].strip() not in sent_wallets]
 
-    est_total = len(wallets) * ((MIN_TOKEN_AMOUNT + MAX_TOKEN_AMOUNT) / 2)
-    console.print(f"[yellow]📋 Wallet valid: {len(wallets)} | Estimasi total kirim: {est_total:.2f} token[/yellow]")
-
-    if est_total > MAX_TOTAL_SEND:
-        console.print(f"[red]❌ Estimasi melebihi batas MAX_TOTAL_SEND ({MAX_TOTAL_SEND}). Kurangi jumlah wallet atau token range.[/red]")
-        exit()
-
-    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TimeRemainingColumn(), console=console) as progress:
-        task = progress.add_task("Mengirim token...", total=len(wallets))
-        total_sent = 0
+    random.shuffle(wallets)
+    total_sent = 0
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Mengirim token...", total=min(len(wallets), DAILY_WALLET_LIMIT))
         with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-            futures = {executor.submit(send_worker, wallet): wallet for wallet in wallets}
-            for future in as_completed(futures):
-                amount = future.result()
-                total_sent += amount
-                progress.update(task, advance=1)
+            futures = []
+            for receiver in wallets[:DAILY_WALLET_LIMIT]:
                 if total_sent >= MAX_TOTAL_SEND:
-                    console.print(f"[red]⛔ Total pengiriman mencapai limit harian: {MAX_TOTAL_SEND} token.[/red]")
                     break
+                futures.append(executor.submit(send_worker, receiver, get_next_nonce))
+            for future in as_completed(futures):
+                sent = future.result()
+                total_sent += sent
+                progress.advance(task)
 
-    console.print(Panel(f"[green]✅ Pengiriman selesai. Total dikirim: {total_sent:.2f} token[/green]", expand=False))
-    show_countdown_to_tomorrow()
+    console.print(Panel(f"[green]✅ Selesai! Total token dikirim: {total_sent}[/green]"))
