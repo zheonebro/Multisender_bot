@@ -86,7 +86,7 @@ TOKEN_ABI = [
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=TOKEN_ABI)
 TOKEN_DECIMALS = token_contract.functions.decimals().call()
 
-MAX_THREADS = 2  # Dikurangi untuk menghindari konflik
+MAX_THREADS = 2  # Dikurangi untuk mengurangi konflik
 RPC_SEMAPHORE = Semaphore(MAX_THREADS)
 nonce_lock = Lock()
 file_lock = Lock()
@@ -104,15 +104,26 @@ def get_next_nonce():
         return current_nonce
 
 
+def get_transaction_status_by_nonce(nonce):
+    try:
+        pending_block = w3.eth.get_block('pending', full_transactions=True)
+        for tx in pending_block.transactions:
+            if tx["from"].lower() == SENDER_ADDRESS.lower() and tx["nonce"] == nonce:
+                return "pending"
+        return "none"
+    except Exception as e:
+        logger.error(f"Gagal memeriksa status transaksi nonce {nonce}: {e}")
+        return "error"
+
+
 def get_gas_price(attempt=1, previous=None):
     try:
         latest_block = w3.eth.get_block('latest')
         base_fee = latest_block['baseFeePerGas'] / 10**9
-        # Tingkatkan gas lebih agresif pada retry
         multiplier = 1.5 + (attempt - 1) * 1.0  # 1.5, 2.5, 3.5
         gas_price = base_fee * multiplier
         if previous and gas_price <= previous:
-            gas_price = previous * 1.2  # Minimal 20% lebih tinggi dari sebelumnya
+            gas_price = previous * 1.2  # Minimal 20% lebih tinggi
         return min(gas_price, MAX_GAS_PRICE_GWEI)
     except Exception as e:
         logger.error(f"❌ Gagal mengambil harga gas: {e}")
@@ -160,7 +171,7 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
 
     sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
     if sender_balance < amount:
-        logger.error(f"❌ Saldo pengirim tidak cukup untuk {receiver}: {sender_balance} < {amount}")
+        logger.error(f"❌ Saldo pengirim tidak cukup untuk {receiver}: {sender_balance} < {amount} token")
         console.print(f"[red]❌ Saldo pengirim tidak cukup untuk {receiver}: {sender_balance} < {amount}[/red]")
         return 0
 
@@ -168,7 +179,7 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
         try:
             gas_price = get_gas_price(attempt)
             nonce = get_next_nonce_func()
-            logger.info(f"Memulai transaksi ke {receiver} | Nonce: {nonce} | Jumlah: {amount} | Harga Gas: {gas_price:.1f} gwei")
+            logger.info(f"Memulai transaksi ke {receiver} | Nonce: {nonce} | Jumlah: {amount} token | Harga Gas: {gas_price:.1f} gwei")
             console.print(f"[blue]🧾 TX ke {receiver} | Nonce: {nonce} | Harga Gas: {gas_price:.1f} gwei[/blue]")
             time.sleep(random.uniform(0.4, 1.2))
 
@@ -188,8 +199,9 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
             if receipt.status == 1:
+                sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
                 msg = f"✅ Berhasil mengirim {amount} token ke {receiver} | TX: {tx_hash.hex()}"
-                logger.info(msg + f" | Gas Used: {receipt.gasUsed}")
+                logger.info(f"{msg} | Gas Used: {receipt.gasUsed}")
                 console.print(msg)
                 with file_lock:
                     with open(SENT_FILE, "a") as f:
@@ -267,8 +279,9 @@ if __name__ == "__main__":
             for future in as_completed(futures):
                 sent = future.result()
                 total_sent += sent
+                sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
+                logger.info(f"Progres sementara: Total token dikirim = {total_sent} | Saldo pengirim tersisa: {sender_balance} token")
                 progress.advance(task)
-                logger.info(f"Progres sementara: Total token dikirim = {total_sent}")
                 time.sleep(0.3)
 
     logger.info(f"Selesai! Total token dikirim: {total_sent}")
