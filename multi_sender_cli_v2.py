@@ -168,13 +168,13 @@ def cancel_transaction(tx_hash, nonce):
         'value': 0,
         'nonce': nonce,
         'gas': 21000,
-        'gasPrice': w3.to_wei(get_sepolia_tea_gas_price(multiplier=2.0), 'gwei')  # Gas 2x lebih tinggi
+        'gasPrice': w3.to_wei(get_sepolia_tea_gas_price(multiplier=3.0), 'gwei')  # Gas 3x lebih tinggi
     }
     signed_cancel_tx = w3.eth.account.sign_transaction(cancel_tx, PRIVATE_KEY)
     try:
         cancel_hash = w3.eth.send_raw_transaction(signed_cancel_tx.raw_transaction)
         logger.info(f"🚫 Membatalkan transaksi {tx_hash} dengan {cancel_hash.hex()}")
-        w3.eth.wait_for_transaction_receipt(cancel_hash, timeout=60)
+        w3.eth.wait_for_transaction_receipt(cancel_hash, timeout=120)  # Timeout 2 menit
         logger.info(f"✅ Pembatalan {cancel_hash.hex()} dikonfirmasi")
         return cancel_hash
     except Exception as e:
@@ -329,7 +329,7 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1):
         tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
         logger.info(f"📤 Transaksi dikirim: {tx_hash.hex()}")
 
-        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)  # Timeout 2 menit
         if tx_receipt.status != 1:
             logger.error(f"❌ Transaksi {tx_hash.hex()} gagal di chain: Status {tx_receipt.status}")
             if remaining_wallets:
@@ -340,7 +340,7 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1):
         logger.info(f"✅ Transaksi {tx_hash.hex()} dikonfirmasi")
         return tx_hash.hex()
     except web3.exceptions.TimeExhausted:
-        logger.error(f"⏰ Transaksi {tx_hash.hex()} timeout setelah 60 detik (attempt {attempt})")
+        logger.error(f"⏰ Transaksi {tx_hash.hex()} timeout setelah 120 detik (attempt {attempt})")
         cancel_hash = cancel_transaction(tx_hash.hex(), nonce)
         if cancel_hash:
             logger.info(f"✅ Transaksi lama dibatalkan, lanjut ke alamat berikutnya")
@@ -350,8 +350,9 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1):
                 return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
             raise Exception("Timeout dan tidak ada alamat pengganti")
         else:
-            logger.error(f"❌ Gagal membatalkan transaksi {tx_hash.hex()}, mencoba lagi dengan gas lebih tinggi")
-            if attempt < 3:
+            logger.error(f"❌ Gagal membatalkan transaksi {tx_hash.hex()}")
+            if attempt < 2:  # Batasi 2 percobaan
+                logger.info(f"🔄 Mencoba lagi dengan gas lebih tinggi untuk {to_address}")
                 return _send_token(to_address, amount, remaining_wallets, attempt + 1)
             if remaining_wallets:
                 new_addr, new_amt = remaining_wallets.pop(0)
@@ -368,14 +369,16 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1):
                     new_addr, new_amt = remaining_wallets.pop(0)
                     logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
                     return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
-            if attempt < 3:
-                logger.info(f"🔄 Mencoba lagi dengan gas lebih tinggi untuk {to_address}")
-                return _send_token(to_address, amount, remaining_wallets, attempt + 1)
-            if remaining_wallets:
-                new_addr, new_amt = remaining_wallets.pop(0)
-                logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
-                return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
-            raise Exception("Replacement underpriced dan tidak ada alamat pengganti")
+            else:
+                logger.error(f"❌ Gagal membatalkan transaksi {tx_hash.hex()}")
+                if attempt < 2:  # Batasi 2 percobaan
+                    logger.info(f"🔄 Mencoba lagi dengan gas lebih tinggi untuk {to_address}")
+                    return _send_token(to_address, amount, remaining_wallets, attempt + 1)
+                if remaining_wallets:
+                    new_addr, new_amt = remaining_wallets.pop(0)
+                    logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
+                    return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
+            raise Exception("Replacement underpriced dan gagal membatalkan transaksi")
         raise
 
 def send_token_threadsafe(to_address, amount, remaining_wallets):
