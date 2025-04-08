@@ -4,6 +4,7 @@ import random
 import time
 from datetime import datetime, time as dt_time, timedelta
 import logging
+import traceback
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
@@ -50,13 +51,13 @@ class JakartaFormatter(logging.Formatter):
             return dt.isoformat()
 
 logger = logging.getLogger("bot")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)  # Ubah ke DEBUG untuk detail lebih banyak
 
 file_handler = logging.FileHandler(log_path, encoding="utf-8")
 stream_handler = logging.StreamHandler()
 stream_handler.setLevel(logging.WARNING)
 
-formatter = JakartaFormatter(fmt="%(asctime)s %(message)s", datefmt="[%Y-%m-%d %H:%M:%S]")
+formatter = JakartaFormatter(fmt="%(asctime)s [%(levelname)s] %(message)s", datefmt="[%Y-%m-%d %H:%M:%S]")
 file_handler.setFormatter(formatter)
 stream_handler.setFormatter(formatter)
 
@@ -77,7 +78,7 @@ EXPLORER_URL = "https://sepolia.tea.xyz/tx/"
 
 MIN_TOKEN_AMOUNT = 10.0
 MAX_TOKEN_AMOUNT = 50.0
-DAILY_WALLET_LIMIT = int(os.getenv("DAILY_WALLET_LIMIT", 200))  # Maksimum 200 wallet per hari
+DAILY_WALLET_LIMIT = int(os.getenv("DAILY_WALLET_LIMIT", 200))
 
 # Validasi PRIVATE_KEY
 if not PRIVATE_KEY:
@@ -146,7 +147,7 @@ TOKEN_ABI = [
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=TOKEN_ABI)
 TOKEN_DECIMALS = token_contract.functions.decimals().call()
 
-failed_addresses = []  # Untuk retry manual
+failed_addresses = []
 
 # Fungsi Gas Price
 def get_sepolia_tea_gas_price(multiplier=1.0, previous_gas_price=None):
@@ -230,10 +231,12 @@ def load_wallets(ignore_sent=False, limit=DAILY_WALLET_LIMIT):
     logger.info(f"✅ Jumlah wallet valid yang dimuat: {len(wallets)}")
     return wallets
 
-def log_transaction(to_address, amount, status, tx_hash_or_error):
+def log_transaction(to_address, amount, status, tx_hash_or_error, gas_used=None, confirm_time=None):
     with open(transaction_log_path, "a", encoding="utf-8") as f:
         timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        f.write(f"{timestamp},{to_address},{amount},{status},{tx_hash_or_error}\n")
+        gas_info = f",Gas Used: {gas_used}" if gas_used else ""
+        time_info = f",Confirm Time: {confirm_time:.2f}s" if confirm_time else ""
+        f.write(f"{timestamp},{to_address},{amount},{status},{tx_hash_or_error}{gas_info}{time_info}\n")
 
 def display_transaction_logs(log_file=None):
     target_log_file = log_file if log_file else transaction_log_path
@@ -248,7 +251,7 @@ def display_transaction_logs(log_file=None):
     table.add_column("Alamat Tujuan", style="cyan")
     table.add_column("Jumlah", justify="right", style="green")
     table.add_column("Status", style="bold")
-    table.add_column("Explorer Link", overflow="fold")
+    table.add_column("Explorer Link/Details", overflow="fold")
 
     sukses = gagal = 0
     total_token = 0.0
@@ -268,7 +271,7 @@ def display_transaction_logs(log_file=None):
 
                 if status.upper() == "SUCCESS":
                     sukses += 1
-                    explorer_link = f"[link={EXPLORER_URL}{detail}]🔗 {detail[:10]}...[/link]"
+                    explorer_link = f"[link={EXPLORER_URL}{detail.split(',')[0]}]🔗 {detail}[/link]"
                     table.add_row(str(idx), waktu, alamat, f"{jumlah_float:.4f}", f"[green]{status}[/green]", explorer_link)
                 else:
                     gagal += 1
@@ -313,12 +316,12 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
         gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
         gas_limit = int(gas_estimate * 1.5)
     except Exception as e:
-        logger.error(f"❌ Gagal mengestimasi gas untuk {to_address} (attempt {attempt}): {e}")
+        logger.error(f"❌ Gagal mengestimasi gas untuk {to_address} (attempt {attempt}): {str(e)}\n{traceback.format_exc()}")
         if remaining_wallets:
             new_addr, new_amt = remaining_wallets.pop(0)
             logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
             return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
-        raise Exception(f"Gagal estimasi gas dan tidak ada alamat pengganti: {e}")
+        raise Exception(f"Gagal estimasi gas: {e}")
 
     nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
     tx = token_contract.functions.transfer(to_address, scaled_amount).build_transaction({
@@ -326,27 +329,29 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
         'nonce': nonce,
         'gas': gas_limit,
         'gasPrice': w3.to_wei(gas_price_to_use, 'gwei'),
-        'chainId': w3.eth.chain_id  # Tambah chainId untuk kompatibilitas
+        'chainId': w3.eth.chain_id
     })
 
-    logger.info(f"ℹ️ Tx Details (attempt {attempt}): {tx}")
+    logger.debug(f"ℹ️ Tx Details (attempt {attempt}): {tx}")
     try:
         signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)  # Gunakan raw_transaction langsung
-        logger.info(f"📤 Transaksi dikirim: {tx_hash.hex()}")
+        start_time = time.time()
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        logger.info(f"📤 Transaksi dikirim ke {to_address}: {tx_hash.hex()} | Gas Price: {gas_price_to_use} Gwei | Gas Limit: {gas_limit}")
 
         tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        confirm_time = time.time() - start_time
         if tx_receipt.status != 1:
-            logger.error(f"❌ Transaksi {tx_hash.hex()} gagal di chain: Status {tx_receipt.status}")
+            logger.error(f"❌ Transaksi {tx_hash.hex()} gagal di chain: Status {tx_receipt.status}\nReceipt: {tx_receipt}")
             if remaining_wallets:
                 new_addr, new_amt = remaining_wallets.pop(0)
                 logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
                 return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
             raise Exception(f"Transaksi gagal: Status {tx_receipt.status}")
-        logger.info(f"✅ Transaksi {tx_hash.hex()} dikonfirmasi")
-        return tx_hash.hex()
+        logger.info(f"✅ Transaksi {tx_hash.hex()} dikonfirmasi | Gas Used: {tx_receipt.gasUsed} | Confirm Time: {confirm_time:.2f}s")
+        return tx_hash.hex(), tx_receipt.gasUsed, confirm_time
     except web3.exceptions.TimeExhausted:
-        logger.error(f"⏰ Transaksi {tx_hash.hex()} timeout setelah 60 detik (attempt {attempt})")
+        logger.error(f"⏰ Transaksi {tx_hash.hex()} timeout setelah 60 detik (attempt {attempt})\n{traceback.format_exc()}")
         cancel_hash = cancel_transaction(tx_hash.hex(), nonce)
         if cancel_hash:
             logger.info(f"✅ Transaksi lama dibatalkan, lanjut ke alamat berikutnya")
@@ -374,6 +379,7 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
                 return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
             raise Exception("Timeout dan gagal membatalkan transaksi")
     except ValueError as e:
+        logger.error(f"❌ ValueError saat mengirim transaksi ke {to_address}: {str(e)}\n{traceback.format_exc()}")
         if "replacement transaction underpriced" in str(e):
             logger.error(f"❌ Replacement underpriced untuk {tx_hash.hex()} (attempt {attempt})")
             cancel_hash = cancel_transaction(tx_hash.hex(), nonce)
@@ -421,15 +427,16 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
 
 def send_token(to_address, amount, remaining_wallets):
     try:
-        tx_hash = _send_token(to_address, amount, remaining_wallets)
-        logger.info(f"✅ Token terkirim ke {to_address} | Amount: {amount:.4f} | TxHash: {tx_hash}")
-        log_transaction(to_address, amount, "SUCCESS", tx_hash)
+        tx_hash, gas_used, confirm_time = _send_token(to_address, amount, remaining_wallets)
+        logger.info(f"✅ Token terkirim ke {to_address} | Amount: {amount:.4f} | TxHash: {tx_hash} | Gas Used: {gas_used} | Confirm Time: {confirm_time:.2f}s")
+        log_transaction(to_address, amount, "SUCCESS", tx_hash, gas_used, confirm_time)
         with open(SENT_FILE, "a") as f:
             f.write(f"{to_address}\n")
         return True, amount
     except Exception as e:
-        logger.error(f"❌ Gagal mengirim ke {to_address}: {e}")
-        log_transaction(to_address, amount, "FAILED", str(e))
+        error_detail = f"{str(e)}\n{traceback.format_exc()}"
+        logger.error(f"❌ Gagal mengirim ke {to_address}: {error_detail}")
+        log_transaction(to_address, amount, "FAILED", error_detail)
         failed_addresses.append((to_address, amount))
         return False, 0
 
@@ -488,7 +495,7 @@ def retry_failed_addresses():
         return
     logger.info(f"🔄 Mencoba ulang {len(failed_addresses)} alamat yang gagal...")
     total_sent = send_tokens(failed_addresses)
-    if total_sent == len(failed_addresses):  # Jika semua selesai
+    if total_sent == len(failed_addresses):
         failed_addresses = []
 
 def get_next_schedule_time():
@@ -517,7 +524,7 @@ def show_progress_timer(next_run):
 
 def schedule_next_day(randomize):
     next_run = get_next_schedule_time()
-    schedule.clear()  # Bersihkan jadwal sebelumnya
+    schedule.clear()
     schedule.every().day.at("08:00").do(main, randomize=randomize)
     logger.info(f"🔌 Pengiriman berikutnya dijadwalkan pada {next_run.strftime('%Y-%m-%d 08:00 WIB')} {'(acak)' if randomize else '(berurutan)'}")
     console.print(f"[bold green]🔌 Pengiriman berikutnya dijadwalkan pada {next_run.strftime('%Y-%m-%d 08:00 WIB')} {'(acak)' if randomize else '(berurutan)'} [/bold green]")
@@ -540,7 +547,6 @@ def main(randomize=False):
     logger.info(f"💰 Jumlah wallet yang akan diproses: {len(wallets)}")
     total_sent = send_tokens(wallets, randomize)
     
-    # Jadwalkan otomatis untuk hari berikutnya setelah pengiriman selesai
     next_run = schedule_next_day(randomize)
     console.print(f"[bold yellow]⏳ Menunggu hingga {next_run.strftime('%Y-%m-%d 08:00 WIB')}...[/bold yellow]")
     show_progress_timer(next_run)
