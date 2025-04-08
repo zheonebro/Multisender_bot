@@ -273,7 +273,7 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
     if latency > 5.0:
         logger.warning(f"⚠️ Latensi jaringan tinggi ({latency:.2f}s), mungkin memengaruhi konfirmasi")
 
-    gas_multiplier = 2.5 + (attempt - 1) * 1.0
+    gas_multiplier = 2.5 + (attempt - 1) * 2.0  # Naik lebih agresif
     tea_gas_price = get_sepolia_tea_gas_price(multiplier=gas_multiplier, previous_gas_price=previous_gas_price)
     gas_price_to_use = min(tea_gas_price, MAX_GAS_PRICE_GWEI)
 
@@ -331,7 +331,7 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
                 return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
         else:
             logger.error(f"❌ Gagal membatalkan transaksi {tx_hash.hex()}, sinkronisasi nonce")
-            time.sleep(1)  # Jeda lebih pendek
+            time.sleep(1)
             updated_nonce = get_pending_transactions()
             logger.info(f"ℹ️ Nonce diperbarui setelah timeout: {updated_nonce}")
             if updated_nonce > nonce:
@@ -357,8 +357,9 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
             return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
         raise Exception("Timeout setelah 3 attempt dan tidak ada alamat pengganti")
     except web3.exceptions.Web3RPCError as e:
-        if "already known" in str(e):
-            logger.error(f"❌ Transaksi {tx_hash.hex()} sudah ada di mempool (attempt {attempt}): {str(e)}")
+        error_msg = str(e)
+        if "already known" in error_msg:
+            logger.error(f"❌ Transaksi {tx_hash.hex()} sudah ada di mempool (attempt {attempt}): {error_msg}")
             time.sleep(1)
             updated_nonce = get_pending_transactions()
             logger.info(f"ℹ️ Nonce diperbarui setelah 'already known': {updated_nonce}")
@@ -377,6 +378,35 @@ def _send_token(to_address, amount, remaining_wallets, attempt=1, previous_gas_p
                 logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
                 return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
             raise Exception("'Already known' setelah 3 attempt dan tidak ada alamat pengganti")
+        elif "replacement transaction underpriced" in error_msg:
+            logger.error(f"❌ Transaksi {tx_hash.hex()} underpriced (attempt {attempt}): {error_msg}")
+            cancel_hash = cancel_transaction(tx_hash.hex(), nonce)
+            if cancel_hash:
+                logger.info(f"✅ Transaksi lama dibatalkan dengan {cancel_hash.hex()}, lanjut ke alamat berikutnya")
+                if remaining_wallets:
+                    new_addr, new_amt = remaining_wallets.pop(0)
+                    logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
+                    return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
+            else:
+                logger.error(f"❌ Gagal membatalkan transaksi {tx_hash.hex()}, tingkatkan gas dan retry")
+                time.sleep(1)
+                updated_nonce = get_pending_transactions()
+                logger.info(f"ℹ️ Nonce diperbarui setelah underpriced: {updated_nonce}")
+                if updated_nonce > nonce:
+                    logger.info(f"✅ Transaksi lama di-drop atau dikonfirmasi, lanjut ke alamat berikutnya")
+                    if remaining_wallets:
+                        new_addr, new_amt = remaining_wallets.pop(0)
+                        logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
+                        return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
+                if attempt < 3:
+                    logger.info(f"🔄 Mencoba lagi dengan gas lebih tinggi untuk {to_address} (attempt {attempt + 1})")
+                    return _send_token(to_address, amount, remaining_wallets, attempt + 1, previous_gas_price=gas_price_to_use)
+                logger.warning(f"⚠️ Maksimum attempt tercapai untuk {to_address}, lanjut ke alamat berikutnya")
+                if remaining_wallets:
+                    new_addr, new_amt = remaining_wallets.pop(0)
+                    logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
+                    return _send_token(new_addr, new_amt, remaining_wallets, attempt=1)
+                raise Exception("Underpriced setelah 3 attempt dan tidak ada alamat pengganti")
         raise
     except ValueError as e:
         logger.error(f"❌ ValueError saat mengirim transaksi ke {to_address}: {str(e)}\n{traceback.format_exc()}")
@@ -441,10 +471,6 @@ def send_token(to_address, amount, remaining_wallets):
         log_transaction(to_address, amount, "FAILED", error_detail)
         failed_addresses.append((to_address, amount))
         return False, 0
-
-# Fungsi lainnya (load_wallets, send_tokens, dll.) tetap sama seperti versi sebelumnya
-# Untuk menghemat ruang, hanya bagian yang relevan diperbarui di atas
-# Pastikan untuk menggabungkan dengan kode lengkap sebelumnya
 
 def reset_sent_wallets():
     try:
