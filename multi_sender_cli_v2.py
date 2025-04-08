@@ -160,44 +160,51 @@ def load_wallets(mode="random"):
 
     return remaining_wallets[:DAILY_WALLET_LIMIT]
 
-def send_worker(receiver):
-    try:
-        receiver = Web3.to_checksum_address(receiver)
-        amount = round(random.uniform(MIN_TOKEN_AMOUNT, MAX_TOKEN_AMOUNT), 4)
-        token_amount = int(amount * (10 ** TOKEN_DECIMALS))
-        nonce = get_next_nonce()
-        gas_price = get_gas_price()
+def send_worker(receiver, max_retries=3):
+    receiver = Web3.to_checksum_address(receiver)
+    amount = round(random.uniform(MIN_TOKEN_AMOUNT, MAX_TOKEN_AMOUNT), 4)
+    token_amount = int(amount * (10 ** TOKEN_DECIMALS))
+    retry_delay = 3
 
-        tx = token_contract.functions.transfer(receiver, token_amount).build_transaction({
-            'from': SENDER_ADDRESS,
-            'nonce': nonce,
-            'gas': 100000,
-            'gasPrice': w3.to_wei(gas_price, 'gwei'),
-            'chainId': w3.eth.chain_id
-        })
+    for attempt in range(1, max_retries + 1):
+        try:
+            nonce = get_next_nonce()
+            gas_price = get_gas_price(multiplier=5.0 + (attempt - 1) * 2.0)
 
-        signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-        raw_tx = signed_tx.rawTransaction if hasattr(signed_tx, 'rawTransaction') else signed_tx.raw_transaction
-        tx_hash = w3.eth.send_raw_transaction(raw_tx)
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+            tx = token_contract.functions.transfer(receiver, token_amount).build_transaction({
+                'from': SENDER_ADDRESS,
+                'nonce': nonce,
+                'gas': 100000,
+                'gasPrice': w3.to_wei(gas_price, 'gwei'),
+                'chainId': w3.eth.chain_id
+            })
 
-        if receipt.status == 1:
-            msg = f"✅ Berhasil kirim {amount} token ke {receiver} | TX: {tx_hash.hex()}"
-            logger.info(msg)
-            console.print(msg)
-            with open(SENT_FILE, "a") as f:
-                f.write(f"{receiver}\n")
-            with open(TRANSACTION_LOG, "a") as logf:
-                logf.write(f"{datetime.now(pytz.timezone('Asia/Jakarta'))} | {receiver} | {amount} | {tx_hash.hex()}\n")
-        else:
-            raise Exception("Transaksi gagal (status != 1)")
+            signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+            raw_tx = getattr(signed_tx, 'rawTransaction', getattr(signed_tx, 'raw_transaction', None))
+            tx_hash = w3.eth.send_raw_transaction(raw_tx)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
 
-    except Exception as e:
-        logger.error(f"❌ Gagal kirim ke {receiver}: {e}")
-        console.print(f"[red]❌ Gagal kirim ke {receiver}: {e}[/red]")
-        if "replacement transaction underpriced" in str(e) or "nonce too low" in str(e):
-            time.sleep(3)
-            cancel_transaction(nonce)
+            if receipt.status == 1:
+                msg = f"✅ Berhasil kirim {amount} token ke {receiver} | TX: {tx_hash.hex()}"
+                logger.info(msg)
+                console.print(msg)
+                with open(SENT_FILE, "a") as f:
+                    f.write(f"{receiver}\n")
+                with open(TRANSACTION_LOG, "a") as logf:
+                    logf.write(f"{datetime.now(pytz.timezone('Asia/Jakarta'))} | {receiver} | {amount} | {tx_hash.hex()}\n")
+                return
+            else:
+                raise Exception("Transaksi gagal (status != 1)")
+
+        except Exception as e:
+            logger.error(f"❌ Attempt {attempt} gagal kirim ke {receiver}: {e}")
+            console.print(f"[red]❌ Attempt {attempt} gagal kirim ke {receiver}: {e}[/red]")
+
+            if "replacement transaction underpriced" in str(e) or "nonce too low" in str(e):
+                time.sleep(retry_delay)
+                continue
+            elif attempt == max_retries:
+                cancel_transaction(nonce)
 
 def show_countdown_to_tomorrow():
     tz = pytz.timezone("Asia/Jakarta")
