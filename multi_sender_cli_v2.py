@@ -86,40 +86,33 @@ TOKEN_ABI = [
 token_contract = w3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=TOKEN_ABI)
 TOKEN_DECIMALS = token_contract.functions.decimals().call()
 
-MAX_THREADS = 3  # Dikurangi untuk mengurangi beban RPC
+MAX_THREADS = 2  # Dikurangi untuk menghindari konflik
 RPC_SEMAPHORE = Semaphore(MAX_THREADS)
 nonce_lock = Lock()
-file_lock = Lock()  # Lock untuk operasi file
+file_lock = Lock()
 global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
 
 
 def get_next_nonce():
-    global global_nonce
     with nonce_lock:
+        global global_nonce
+        pending_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
+        if pending_nonce > global_nonce:
+            global_nonce = pending_nonce
         current_nonce = global_nonce
         global_nonce += 1
-    return current_nonce
+        return current_nonce
 
 
-def get_transaction_status_by_nonce(nonce):
-    try:
-        pending_block = w3.eth.get_block('pending', full_transactions=True)
-        for tx in pending_block.transactions:
-            if tx["from"].lower() == SENDER_ADDRESS.lower() and tx["nonce"] == nonce:
-                return "pending"
-        return "none"
-    except Exception as e:
-        logger.error(f"Gagal memeriksa status transaksi nonce {nonce}: {e}")
-        return "error"
-
-
-def get_gas_price(multiplier=5.0, previous=None):
+def get_gas_price(attempt=1, previous=None):
     try:
         latest_block = w3.eth.get_block('latest')
         base_fee = latest_block['baseFeePerGas'] / 10**9
+        # Tingkatkan gas lebih agresif pada retry
+        multiplier = 1.5 + (attempt - 1) * 1.0  # 1.5, 2.5, 3.5
         gas_price = base_fee * multiplier
         if previous and gas_price <= previous:
-            gas_price = previous * 1.5
+            gas_price = previous * 1.2  # Minimal 20% lebih tinggi dari sebelumnya
         return min(gas_price, MAX_GAS_PRICE_GWEI)
     except Exception as e:
         logger.error(f"❌ Gagal mengambil harga gas: {e}")
@@ -129,7 +122,7 @@ def get_gas_price(multiplier=5.0, previous=None):
 def cancel_transaction(nonce, max_attempts=3):
     for attempt in range(1, max_attempts + 1):
         try:
-            gas_price = get_gas_price(multiplier=20.0 + (attempt - 1) * 10.0)
+            gas_price = get_gas_price(attempt * 2)  # Gas lebih tinggi untuk pembatalan
             tx = {
                 'from': SENDER_ADDRESS,
                 'to': SENDER_ADDRESS,
@@ -165,7 +158,6 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
     token_amount = int(amount * (10 ** TOKEN_DECIMALS))
     retry_delay = 3
 
-    # Periksa saldo pengirim sebelum transaksi
     sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
     if sender_balance < amount:
         logger.error(f"❌ Saldo pengirim tidak cukup untuk {receiver}: {sender_balance} < {amount}")
@@ -174,11 +166,7 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
 
     for attempt in range(1, max_retries + 1):
         try:
-            base_gas = w3.eth.gas_price / 1e9
-            gas_price = base_gas * (1.15 + 0.05 * (attempt - 1))
-            gas_price = max(gas_price, 30)
-            gas_price = min(gas_price, MAX_GAS_PRICE_GWEI)
-
+            gas_price = get_gas_price(attempt)
             nonce = get_next_nonce_func()
             logger.info(f"Memulai transaksi ke {receiver} | Nonce: {nonce} | Jumlah: {amount} | Harga Gas: {gas_price:.1f} gwei")
             console.print(f"[blue]🧾 TX ke {receiver} | Nonce: {nonce} | Harga Gas: {gas_price:.1f} gwei[/blue]")
@@ -196,7 +184,7 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
             raw_tx = getattr(signed_tx, 'rawTransaction', getattr(signed_tx, 'raw_transaction', None))
             tx_hash = w3.eth.send_raw_transaction(raw_tx)
             logger.info(f"Transaksi dikirim ke {receiver} | TX Hash: {tx_hash.hex()} | Menunggu konfirmasi...")
-            time.sleep(random.uniform(2, 4))  # Jeda lebih lama untuk mengurangi beban RPC
+            time.sleep(random.uniform(2, 4))
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
             if receipt.status == 1:
@@ -213,8 +201,12 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
                 raise Exception("Transaksi gagal (status != 1)")
 
         except Exception as e:
-            logger.error(f"❌ Percobaan {attempt} gagal mengirim ke {receiver}: {e}")
-            console.print(f"[red]❌ Percobaan {attempt} gagal mengirim ke {receiver}: {e}[/red]")
+            error_msg = str(e)
+            logger.error(f"❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}")
+            console.print(f"[red]❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}[/red]")
+            if "replacement transaction underpriced" in error_msg and attempt < max_retries:
+                logger.warning(f"⚠️ Harga gas terlalu rendah untuk nonce {nonce}, mencoba lagi dengan gas lebih tinggi")
+                continue
             time.sleep(retry_delay)
             if attempt == max_retries:
                 logger.error(f"❌ Gagal mengirim ke {receiver} setelah {max_retries} percobaan")
