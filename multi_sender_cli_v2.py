@@ -41,7 +41,6 @@ MIN_TOKEN_AMOUNT = 10.0
 MAX_TOKEN_AMOUNT = 50.0
 DAILY_WALLET_LIMIT = 200
 MAX_TOTAL_SEND = 1000  # Token
-MIN_RECEIVER_BALANCE = 0.1
 CSV_FILE = "wallets.csv"
 SENT_FILE = "sent_wallets.txt"
 
@@ -166,12 +165,12 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
         try:
             base_gas = w3.eth.gas_price / 1e9
             gas_price = base_gas * (1.15 + 0.05 * (attempt - 1))
-            gas_price = max(gas_price, 30)  # minimal 30 gwei
+            gas_price = max(gas_price, 30)
             gas_price = min(gas_price, MAX_GAS_PRICE_GWEI)
 
             nonce = get_next_nonce_func()
             console.print(f"[blue]🧾 TX ke {receiver} | Nonce: {nonce} | Harga Gas: {gas_price:.1f} gwei[/blue]")
-            time.sleep(random.uniform(0.4, 1.2))  # Hindari race condition
+            time.sleep(random.uniform(0.4, 1.2))
 
             tx = token_contract.functions.transfer(receiver, token_amount).build_transaction({
                 'from': SENDER_ADDRESS,
@@ -184,7 +183,7 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
             signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
             raw_tx = getattr(signed_tx, 'rawTransaction', getattr(signed_tx, 'raw_transaction', None))
             tx_hash = w3.eth.send_raw_transaction(raw_tx)
-            time.sleep(random.uniform(1, 3))  # Jeda untuk mengurangi beban RPC
+            time.sleep(random.uniform(1, 3))
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
             if receipt.status == 1:
@@ -206,17 +205,16 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
             if attempt == max_retries:
                 logger.error(f"❌ Gagal mengirim ke {receiver} setelah {max_retries} percobaan")
                 cancel_transaction(nonce)
-                # Sinkronkan ulang nonce setelah kegagalan total
                 with nonce_lock:
                     global global_nonce
                     global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
+                    logger.warning("🔁 Nonce di-reset karena kegagalan transaksi.")
     return 0
 
 
 if __name__ == "__main__":
     console.print(Panel("[bold cyan]🚀 Memulai pengiriman token...[/bold cyan]"))
 
-    # Periksa saldo pengirim
     sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
     if sender_balance < MAX_TOTAL_SEND:
         logger.error(f"❌ Saldo pengirim tidak cukup: {sender_balance} < {MAX_TOTAL_SEND}")
@@ -228,10 +226,13 @@ if __name__ == "__main__":
         with open(SENT_FILE, "r") as f:
             sent_wallets = set(line.strip() for line in f.readlines())
 
-    # Validasi dan baca dompet dari CSV
     with open(CSV_FILE, "r") as f:
         reader = csv.reader(f)
-        wallets = [line[0].strip() for line in reader if line and Web3.is_address(line[0].strip()) and line[0].strip() not in sent_wallets]
+        wallets = [
+            line[0].strip()
+            for line in reader
+            if line and Web3.is_address(line[0].strip()) and line[0].strip() not in sent_wallets
+        ]
         if not wallets:
             logger.error("❌ Tidak ada alamat dompet yang valid di wallets.csv")
             console.print("[red]❌ Tidak ada alamat dompet yang valid di wallets.csv[/red]")
@@ -258,5 +259,6 @@ if __name__ == "__main__":
                 sent = future.result()
                 total_sent += sent
                 progress.advance(task)
+                time.sleep(0.3)
 
     console.print(Panel(f"[green]✅ Selesai! Total token dikirim: {total_sent}[/green]"))
