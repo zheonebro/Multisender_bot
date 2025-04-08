@@ -109,7 +109,7 @@ def get_transaction_status_by_nonce(nonce):
                 return "pending"
         return "none"
     except Exception as e:
-        logger.error(f"Gagal cek status transaksi nonce {nonce}: {e}")
+        logger.error(f"Gagal memeriksa status transaksi nonce {nonce}: {e}")
         return "error"
 
 
@@ -120,7 +120,7 @@ def get_gas_price(multiplier=5.0, previous=None):
             gas_price = previous * 1.5
         return min(gas_price, MAX_GAS_PRICE_GWEI)
     except Exception as e:
-        logger.error(f"❌ Gagal ambil gas price: {e}")
+        logger.error(f"❌ Gagal mengambil harga gas: {e}")
         return MAX_GAS_PRICE_GWEI
 
 
@@ -140,18 +140,23 @@ def cancel_transaction(nonce, max_attempts=3):
             signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
             raw_tx = signed_tx.rawTransaction if hasattr(signed_tx, 'rawTransaction') else signed_tx.raw_transaction
             tx_hash = w3.eth.send_raw_transaction(raw_tx)
-            console.print(f"[yellow]🚫 Membatalkan nonce {nonce} (attempt {attempt}): {tx_hash.hex()[:10]}...[/yellow]")
+            console.print(f"[yellow]🚫 Membatalkan nonce {nonce} (percobaan {attempt}): {tx_hash.hex()[:10]}...[/yellow]")
             w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
             return tx_hash
         except Exception as e:
             if "already known" in str(e):
                 return None
-            logger.error(f"Gagal membatalkan nonce {nonce} (attempt {attempt}): {e}")
+            logger.error(f"Gagal membatalkan nonce {nonce} (percobaan {attempt}): {e}")
             time.sleep(2)
     return None
 
 
 def send_worker(receiver, get_next_nonce_func, max_retries=3):
+    if not Web3.is_address(receiver):
+        logger.error(f"❌ Alamat tidak valid: {receiver}")
+        console.print(f"[red]❌ Alamat tidak valid: {receiver}[/red]")
+        return 0
+
     receiver = Web3.to_checksum_address(receiver)
     amount = round(random.uniform(MIN_TOKEN_AMOUNT, MAX_TOKEN_AMOUNT), 4)
     token_amount = int(amount * (10 ** TOKEN_DECIMALS))
@@ -165,7 +170,7 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
             gas_price = min(gas_price, MAX_GAS_PRICE_GWEI)
 
             nonce = get_next_nonce_func()
-            console.print(f"[blue]🧾 TX ke {receiver} | Nonce: {nonce} | GasPrice: {gas_price:.1f} gwei[/blue]")
+            console.print(f"[blue]🧾 TX ke {receiver} | Nonce: {nonce} | Harga Gas: {gas_price:.1f} gwei[/blue]")
             time.sleep(random.uniform(0.4, 1.2))  # Hindari race condition
 
             tx = token_contract.functions.transfer(receiver, token_amount).build_transaction({
@@ -179,10 +184,11 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
             signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
             raw_tx = getattr(signed_tx, 'rawTransaction', getattr(signed_tx, 'raw_transaction', None))
             tx_hash = w3.eth.send_raw_transaction(raw_tx)
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            time.sleep(random.uniform(1, 3))  # Jeda untuk mengurangi beban RPC
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
             if receipt.status == 1:
-                msg = f"✅ Berhasil kirim {amount} token ke {receiver} | TX: {tx_hash.hex()}"
+                msg = f"✅ Berhasil mengirim {amount} token ke {receiver} | TX: {tx_hash.hex()}"
                 logger.info(msg)
                 console.print(msg)
                 with open(SENT_FILE, "a") as f:
@@ -194,24 +200,42 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
                 raise Exception("Transaksi gagal (status != 1)")
 
         except Exception as e:
-            logger.error(f"❌ Attempt {attempt} gagal kirim ke {receiver}: {e}")
-            console.print(f"[red]❌ Attempt {attempt} gagal kirim ke {receiver}: {e}[/red]")
+            logger.error(f"❌ Percobaan {attempt} gagal mengirim ke {receiver}: {e}")
+            console.print(f"[red]❌ Percobaan {attempt} gagal mengirim ke {receiver}: {e}[/red]")
             time.sleep(retry_delay)
             if attempt == max_retries:
+                logger.error(f"❌ Gagal mengirim ke {receiver} setelah {max_retries} percobaan")
                 cancel_transaction(nonce)
+                # Sinkronkan ulang nonce setelah kegagalan total
+                with nonce_lock:
+                    global global_nonce
+                    global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
     return 0
 
 
 if __name__ == "__main__":
     console.print(Panel("[bold cyan]🚀 Memulai pengiriman token...[/bold cyan]"))
+
+    # Periksa saldo pengirim
+    sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
+    if sender_balance < MAX_TOTAL_SEND:
+        logger.error(f"❌ Saldo pengirim tidak cukup: {sender_balance} < {MAX_TOTAL_SEND}")
+        console.print(f"[red]❌ Saldo pengirim tidak cukup: {sender_balance} < {MAX_TOTAL_SEND}[/red]")
+        exit()
+
     sent_wallets = set()
     if os.path.exists(SENT_FILE):
         with open(SENT_FILE, "r") as f:
             sent_wallets = set(line.strip() for line in f.readlines())
 
+    # Validasi dan baca dompet dari CSV
     with open(CSV_FILE, "r") as f:
         reader = csv.reader(f)
-        wallets = [line[0].strip() for line in reader if line and line[0].strip() not in sent_wallets]
+        wallets = [line[0].strip() for line in reader if line and Web3.is_address(line[0].strip()) and line[0].strip() not in sent_wallets]
+        if not wallets:
+            logger.error("❌ Tidak ada alamat dompet yang valid di wallets.csv")
+            console.print("[red]❌ Tidak ada alamat dompet yang valid di wallets.csv[/red]")
+            exit()
 
     random.shuffle(wallets)
     total_sent = 0
