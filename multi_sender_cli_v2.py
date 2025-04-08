@@ -128,7 +128,7 @@ def cancel_transaction(nonce, max_attempts=3):
                 'chainId': w3.eth.chain_id
             }
             signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
             console.print(f"[yellow]🚫 Membatalkan nonce {nonce} (attempt {attempt}): {tx_hash.hex()[:10]}...[/yellow]")
             w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
             return tx_hash
