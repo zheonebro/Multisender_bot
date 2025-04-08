@@ -28,7 +28,7 @@ PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 SENDER_ADDRESS = Web3.to_checksum_address(os.getenv("SENDER_ADDRESS"))
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_ADDRESS = Web3.to_checksum_address(os.getenv("TOKEN_CONTRACT"))
-MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "2000"))  # Naikkan default
+MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "2000"))
 
 MIN_TOKEN_AMOUNT = 10.0
 MAX_TOKEN_AMOUNT = 50.0
@@ -66,7 +66,7 @@ def get_gas_price(multiplier=5.0, previous=None):
 def cancel_transaction(nonce, max_attempts=3):
     for attempt in range(1, max_attempts + 1):
         try:
-            high_gas_price = get_gas_price(multiplier=20.0 + (attempt - 1) * 10.0)  # Naikkan gas jika gagal
+            high_gas_price = get_gas_price(multiplier=20.0 + (attempt - 1) * 10.0)  # Mulai dari 20x, naik 10x per attempt
             tx = {
                 'from': SENDER_ADDRESS,
                 'to': SENDER_ADDRESS,
@@ -80,7 +80,7 @@ def cancel_transaction(nonce, max_attempts=3):
             tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
             console.print(f"[yellow]🚫 Membatalkan nonce {nonce} (attempt {attempt}) dengan gas {high_gas_price:.1f} Gwei: [bold]{tx_hash.hex()[:8]}...[/bold][/yellow]")
             logger.info(f"🚫 Membatalkan nonce {nonce} (attempt {attempt}) dengan gas {high_gas_price:.1f} Gwei: {tx_hash.hex()}")
-            w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)  # Naikkan timeout
+            w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)  # Naikkan timeout ke 120 detik
             console.print(f"[green]✅ Nonce {nonce} berhasil dibatalkan: {tx_hash.hex()[:8]}...[/green]")
             return tx_hash
         except Exception as e:
@@ -89,7 +89,7 @@ def cancel_transaction(nonce, max_attempts=3):
             console.print(f"[red]❌ Gagal membatalkan nonce {nonce} (attempt {attempt}): {error_msg[:50]}...[/red]")
             if "already known" in error_msg:
                 console.print(f"[yellow]⚠️ Nonce {nonce} sudah ada di mempool, skip[/yellow]")
-                return None  # Skip jika sudah dikenal
+                return None  # Skip langsung
             if attempt == max_attempts:
                 console.print(f"[red]❌ Maksimum attempt pembatalan tercapai untuk nonce {nonce}[/red]")
                 return None
@@ -127,7 +127,7 @@ def _send_token(to_address, amount, max_attempts=3):
             start_time = time.time()
             tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
             console.print(f"[cyan]📤 Mengirim ke {to_address[:8]}...: [bold]{tx_hash.hex()[:8]}...[/bold] (Gas: {gas_price:.1f} Gwei, Attempt {attempt})")
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)  # Naikkan timeout
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
             if receipt.status == 1:
                 confirm_time = time.time() - start_time
                 timeout_count = 0
