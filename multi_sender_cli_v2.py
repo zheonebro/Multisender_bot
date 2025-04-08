@@ -176,26 +176,38 @@ def send_worker(receiver):
         })
 
         signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
 
-        if receipt.status == 1:
-            msg = f"✅ Berhasil kirim {amount} token ke {receiver} | TX: {tx_hash.hex()}"
-            logger.info(msg)
-            console.print(msg)
-            with open(SENT_FILE, "a") as f:
-                f.write(f"{receiver}\n")
-            with open(TRANSACTION_LOG, "a") as logf:
-                logf.write(f"{datetime.now(pytz.timezone('Asia/Jakarta'))} | {receiver} | {amount} | {tx_hash.hex()}\n")
-        else:
-            raise Exception("Transaksi gagal (status != 1)")
+        for attempt in range(3):  # retry up to 3x
+            try:
+                tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+                receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+                if receipt.status == 1:
+                    msg = f"✅ Berhasil kirim {amount} token ke {receiver} | TX: {tx_hash.hex()}"
+                    logger.info(msg)
+                    console.print(msg)
+                    with open(SENT_FILE, "a") as f:
+                        f.write(f"{receiver}\n")
+                    with open(TRANSACTION_LOG, "a") as logf:
+                        logf.write(f"{datetime.now(pytz.timezone('Asia/Jakarta'))} | {receiver} | {amount} | {tx_hash.hex()}\n")
+                    return
+                else:
+                    raise Exception("Transaksi gagal (status != 1)")
+            except Exception as e:
+                if "replacement transaction underpriced" in str(e) or "nonce too low" in str(e):
+                    gas_price *= 1.5  # increase gas
+                    tx['gasPrice'] = w3.to_wei(gas_price, 'gwei')
+                    signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+                    logger.warning(f"[Retry {attempt+1}] Meningkatkan gas price & mencoba ulang...")
+                    time.sleep(2)
+                else:
+                    raise e
+        raise Exception("Transaksi gagal setelah 3 percobaan gas price")
 
     except Exception as e:
         logger.error(f"❌ Gagal kirim ke {receiver}: {e}")
         console.print(f"[red]❌ Gagal kirim ke {receiver}: {e}[/red]")
-        if "replacement transaction underpriced" in str(e) or "nonce too low" in str(e):
-            time.sleep(3)
-            cancel_transaction(nonce)
+        cancel_transaction(nonce)
+
 
 if __name__ == "__main__":
     console.print(Panel("[bold cyan]🚀 ERC20 Multi Sender CLI Bot[/bold cyan]", expand=False))
