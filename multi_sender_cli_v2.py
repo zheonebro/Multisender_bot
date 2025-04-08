@@ -38,7 +38,7 @@ console.print(Panel.fit(BANNER, title="[bold green]🚀 TEA SEPOLIA TESNET Sende
 log_dir = "runtime_logs"
 os.makedirs(log_dir, exist_ok=True)
 log_path = os.path.join(log_dir, "runtime.log")
-transaction_log_path = os.path.join(log_dir, "transactions.log")
+transaction_log_path = os.path.join(log_dir, f"transactions_{datetime.now(pytz.timezone('Asia/Jakarta')).strftime('%Y%m%d_%H%M%S')}.log")
 
 JAKARTA_TZ = pytz.timezone("Asia/Jakarta")
 
@@ -56,7 +56,7 @@ logger.setLevel(logging.INFO)
 
 file_handler = logging.FileHandler(log_path, encoding="utf-8")
 stream_handler = logging.StreamHandler()
-stream_handler.setLevel(logging.WARNING)  # Hanya tampilkan warning/error di console
+stream_handler.setLevel(logging.WARNING)
 
 formatter = JakartaFormatter(fmt="%(asctime)s %(message)s", datefmt="[%Y-%m-%d %H:%M:%S]")
 file_handler.setFormatter(formatter)
@@ -67,6 +67,7 @@ logger.addHandler(stream_handler)
 
 console.print("[bold green]🟢 Bot dimulai. Log detail tersedia di runtime.log[/bold green]")
 logger.info("🕒 Logging timezone aktif: Asia/Jakarta")
+logger.info(f"📜 Log transaksi akan disimpan di: {transaction_log_path}")
 
 # Config
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
@@ -143,58 +144,23 @@ TOKEN_DECIMALS = token_contract.functions.decimals().call()
 # Global Rate Limiting State
 rate_limit_lock = threading.Lock()
 last_sent_time = 0
-current_nonce = None
 nonce_lock = threading.Lock()
 
-failed_addresses = []
+failed_addresses = []  # Untuk retry manual, tidak direset harian
 
-# Fungsi Gas Price (tanpa logging kecuali error)
+# Fungsi Gas Price
 def get_sepolia_tea_gas_price():
     url = "https://sepolia.tea.xyz/api/v1/gas-price-oracle"
     try:
         response = requests.get(url, timeout=5)
         response.raise_for_status()
         data = response.json()
-        gas_price_gwei = float(data.get("fast", 0)) * 1.2  # Buffer 20%
+        gas_price_gwei = float(data.get("fast", 0)) * 1.2
         return min(gas_price_gwei, MAX_GAS_PRICE_GWEI)
     except requests.RequestException as e:
         logger.error(f"❌ Gagal mengambil gas price dari Sepolia TEA: {e}")
-        network_gas_price = w3.eth.gas_price / 10**9 * 1.2  # Buffer 20%
+        network_gas_price = w3.eth.gas_price / 10**9 * 1.2
         return min(network_gas_price, MAX_GAS_PRICE_GWEI)
-
-# Fungsi Pembatalan Transaksi
-def cancel_transaction(tx_hash, nonce):
-    cancel_tx = {
-        'from': SENDER_ADDRESS,
-        'to': SENDER_ADDRESS,
-        'value': 0,
-        'nonce': nonce,
-        'gas': 21000,
-        'gasPrice': w3.to_wei(get_sepolia_tea_gas_price() * 1.5, 'gwei')  # Gas lebih tinggi
-    }
-    signed_cancel_tx = w3.eth.account.sign_transaction(cancel_tx, PRIVATE_KEY)
-    cancel_hash = w3.eth.send_raw_transaction(signed_cancel_tx.raw_transaction)
-    logger.info(f"🚫 Membatalkan transaksi {tx_hash} dengan {cancel_hash.hex()}")
-    return cancel_hash
-
-# Sinkronisasi Nonce (tanpa logging ke console)
-def initialize_nonce():
-    global current_nonce
-    try:
-        current_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
-    except Exception as e:
-        logger.error(f"❌ Gagal menginisialisasi nonce: {e}")
-        raise
-
-def get_next_nonce():
-    global current_nonce
-    with nonce_lock:
-        network_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
-        if network_nonce > current_nonce:
-            current_nonce = network_nonce
-        nonce = current_nonce
-        current_nonce += 1
-        return nonce
 
 def check_balance():
     balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call()
@@ -244,12 +210,14 @@ def log_transaction(to_address, amount, status, tx_hash_or_error):
         timestamp = datetime.now(JAKARTA_TZ).strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"{timestamp},{to_address},{amount},{status},{tx_hash_or_error}\n")
 
-def display_transaction_logs():
-    if not os.path.exists(transaction_log_path):
-        console.print("📬 Belum ada transaksi yang dicatat.", style="yellow")
+def display_transaction_logs(log_file=None):
+    target_log_file = log_file if log_file else transaction_log_path
+    
+    if not os.path.exists(target_log_file):
+        console.print(f"📬 Belum ada transaksi yang dicatat di {target_log_file}.", style="yellow")
         return
 
-    table = Table(title="📌 LOG TRANSAKSI TOKEN (SELURUH DATA)", box=box.SIMPLE_HEAVY)
+    table = Table(title=f"📌 LOG TRANSAKSI TOKEN ({os.path.basename(target_log_file)})", box=box.SIMPLE_HEAVY)
     table.add_column("No", justify="center", style="dim")
     table.add_column("Waktu", style="dim", width=20)
     table.add_column("Alamat Tujuan", style="cyan")
@@ -260,12 +228,13 @@ def display_transaction_logs():
     sukses = gagal = 0
     total_token = 0.0
 
-    with open(transaction_log_path, "r", encoding="utf-8") as f:
+    with open(target_log_file, "r", encoding="utf-8") as f:
         lines = f.readlines()
         for idx, line in enumerate(lines, 1):
             parts = line.strip().split(",")
             if len(parts) >= 5:
-                waktu, alamat, jumlah, status, detail = parts
+                waktu, alamat, jumlah, status, *detail = parts
+                detail = ",".join(detail)
                 try:
                     jumlah_float = float(jumlah)
                     total_token += jumlah_float
@@ -284,17 +253,29 @@ def display_transaction_logs():
     console.print(f"✅ Total Sukses: [green]{sukses}[/green] | ❌ Gagal: [red]{gagal}[/red] | 📦 Total Token Dikirim: [cyan]{total_token:.4f}[/cyan]", style="bold")
 
 def check_logs():
-    logger.info("📜 Menampilkan seluruh log transaksi...")
-    display_transaction_logs()
+    logger.info("📜 Menampilkan opsi untuk memilih log transaksi...")
+    log_files = [f for f in os.listdir(log_dir) if f.startswith("transactions_") and f.endswith(".log")]
+    if not log_files:
+        console.print("[bold yellow]ℹ️ Tidak ada file log transaksi di folder runtime_logs.[/bold yellow]")
+        return
 
-# Fungsi Pengiriman Token (tanpa logging ke console)
-@tenacity.retry(
-    stop=tenacity.stop_after_attempt(3),
-    wait=tenacity.wait_exponential(multiplier=2, min=2, max=10),
-    retry=tenacity.retry_if_exception_type(Exception),
-    reraise=True
-)
-def _send_token_with_retry(to_address, amount):
+    log_files.sort(reverse=True)
+    console.print("\n[bold cyan]=== PILIH FILE LOG TRANSAKSI ===[/bold cyan]")
+    for idx, log_file in enumerate(log_files, 1):
+        console.print(f"[{idx}] {log_file}")
+    console.print("[0] Kembali ke menu utama")
+
+    pilihan = IntPrompt.ask("Pilih nomor file log", default=1, show_default=True)
+    if pilihan == 0:
+        return
+    elif 1 <= pilihan <= len(log_files):
+        selected_log = os.path.join(log_dir, log_files[pilihan - 1])
+        console.print(f"[bold green]📜 Menampilkan log dari: {selected_log}[/bold green]")
+        display_transaction_logs(selected_log)
+    else:
+        console.print("[bold red]❌ Pilihan tidak valid![/bold red]")
+
+def _send_token(to_address, amount, remaining_wallets):
     from_address = SENDER_ADDRESS
     to_address = web3.Web3.to_checksum_address(to_address)
     scaled_amount = int(amount * (10 ** TOKEN_DECIMALS))
@@ -304,46 +285,58 @@ def _send_token_with_retry(to_address, amount):
 
     try:
         gas_estimate = token_contract.functions.transfer(to_address, scaled_amount).estimate_gas({'from': from_address})
-        gas_limit = int(gas_estimate * 1.2)
+        gas_limit = int(gas_estimate * 1.5)
     except Exception as e:
         logger.error(f"❌ Gagal mengestimasi gas untuk {to_address}: {e}")
-        raise Exception(f"Gagal estimasi gas: {e}")
+        if remaining_wallets:
+            new_addr, new_amt = remaining_wallets.pop(0)
+            logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
+            return _send_token(new_addr, new_amt, remaining_wallets)
+        raise Exception(f"Gagal estimasi gas dan tidak ada alamat pengganti: {e}")
 
     tx = token_contract.functions.transfer(to_address, scaled_amount).build_transaction({
         'from': from_address,
-        'nonce': get_next_nonce(),
+        'nonce': w3.eth.get_transaction_count(SENDER_ADDRESS, "pending"),
         'gas': gas_limit,
         'gasPrice': w3.to_wei(gas_price_to_use, 'gwei')
     })
 
+    logger.info(f"ℹ️ Tx Details: {tx}")
     signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
     tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
     logger.info(f"📤 Transaksi dikirim: {tx_hash.hex()}")
 
     try:
-        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=600)
+        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)  # 1 menit
         if tx_receipt.status != 1:
             logger.error(f"❌ Transaksi {tx_hash.hex()} gagal di chain: Status {tx_receipt.status}")
+            if remaining_wallets:
+                new_addr, new_amt = remaining_wallets.pop(0)
+                logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
+                return _send_token(new_addr, new_amt, remaining_wallets)
             raise Exception(f"Transaksi gagal: Status {tx_receipt.status}")
         logger.info(f"✅ Transaksi {tx_hash.hex()} dikonfirmasi")
         return tx_hash.hex()
     except web3.exceptions.TimeExhausted:
-        logger.error(f"⏰ Transaksi {tx_hash.hex()} tidak dikonfirmasi setelah 600 detik")
-        cancel_hash = cancel_transaction(tx_hash.hex(), tx['nonce'])
-        raise Exception(f"Timeout: Dibatalkan dengan {cancel_hash.hex()}")
+        logger.error(f"⏰ Transaksi {tx_hash.hex()} tidak dikonfirmasi setelah 60 detik")
+        if remaining_wallets:
+            new_addr, new_amt = remaining_wallets.pop(0)
+            logger.info(f"🔄 Ganti dengan alamat baru: {new_addr}")
+            return _send_token(new_addr, new_amt, remaining_wallets)
+        raise Exception("Timeout setelah 60 detik dan tidak ada alamat pengganti")
 
-def send_token_threadsafe(to_address, amount):
+def send_token_threadsafe(to_address, amount, remaining_wallets):
     try:
-        tx_hash = _send_token_with_retry(to_address, amount)
+        tx_hash = _send_token(to_address, amount, remaining_wallets)
         logger.info(f"✅ Token terkirim ke {to_address} | Amount: {amount:.4f} | TxHash: {tx_hash}")
         log_transaction(to_address, amount, "SUCCESS", tx_hash)
         with open(SENT_FILE, "a") as f:
             f.write(f"{to_address}\n")
         return True, amount
     except Exception as e:
-        logger.error(f"❌ Gagal mengirim ke {to_address} setelah retry: {e}")
+        logger.error(f"❌ Gagal mengirim ke {to_address}: {e}")
         log_transaction(to_address, amount, "FAILED", str(e))
-        failed_addresses.append((to_address, amount))
+        failed_addresses.append((to_address, amount))  # Untuk retry manual
         return False, 0
     finally:
         delay = random.uniform(0.5, 2.0)
@@ -359,15 +352,14 @@ def reset_sent_wallets():
         logger.error(f"❌ Gagal mereset sent_wallets.txt: {e}")
         return False
 
-# Fungsi Batch Diperbarui untuk Output Console Rapi
 def send_token_batch(wallets, randomize=False):
     if randomize:
         random.shuffle(wallets)
         logger.info("🔀 Daftar wallet diacak untuk pengiriman acak.")
     total_wallets_sent = 0
+    remaining_wallets = wallets.copy()  # Salinan untuk penggantian
 
     for i in range(0, len(wallets), BATCH_SIZE):
-        initialize_nonce()
         batch = wallets[i:i + BATCH_SIZE]
         console.print(f"Memproses batch {i // BATCH_SIZE + 1} ({len(batch)} wallet)...")
         logger.info(f"🚀 Memulai batch {i // BATCH_SIZE + 1} dengan {len(batch)} wallet")
@@ -382,7 +374,7 @@ def send_token_batch(wallets, randomize=False):
         ) as progress:
             task = progress.add_task("", total=len(batch))
             with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-                futures = [executor.submit(send_token_threadsafe, addr, amt) for addr, amt in batch]
+                futures = [executor.submit(send_token_threadsafe, addr, amt, remaining_wallets) for addr, amt in batch]
                 for future in as_completed(futures):
                     success, amount = future.result()
                     if success:
@@ -423,7 +415,9 @@ def retry_failed_addresses():
         console.print("[bold green]✅ Tidak ada alamat yang gagal untuk dicoba ulang.[/bold green]")
         return
     logger.info(f"🔄 Mencoba ulang {len(failed_addresses)} alamat yang gagal...")
-    send_token_batch(failed_addresses)
+    success = send_token_batch(failed_addresses)
+    if success:
+        failed_addresses = []  # Kosongkan setelah berhasil
 
 def get_next_schedule_time():
     now = datetime.now(JAKARTA_TZ)
@@ -490,9 +484,10 @@ def run_cli():
         console.print(f"[bold yellow]Rentang Token Acak per Wallet: {MIN_TOKEN_AMOUNT} - {MAX_TOKEN_AMOUNT}[/bold yellow]")
         console.print(f"[bold yellow]Limit Harian Wallet: {DAILY_WALLET_LIMIT} alamat[/bold yellow]")
         console.print(f"[bold yellow]Gas Speed: fast (max {MAX_GAS_PRICE_GWEI} Gwei)[/bold yellow]")
+        console.print(f"[bold yellow]Log Transaksi Saat Ini: {os.path.basename(transaction_log_path)}[/bold yellow]")
         console.print("[1] Jalankan pengiriman token sekarang (berurutan)")
         console.print("[2] Jalankan pengiriman token sekarang (acak)")
-        console.print("[3] Tampilkan log transaksi")
+        console.print("[3] Tampilkan log transaksi (pilih file)")
         console.print("[4] Jalankan mode penjadwalan (scheduler)")
         console.print("[5] Coba ulang alamat yang gagal")
         console.print("[0] Keluar")
