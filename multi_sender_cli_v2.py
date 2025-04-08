@@ -30,6 +30,8 @@ console = Console()
 # Load config
 load_dotenv()
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+if PRIVATE_KEY.startswith("0x"):
+    PRIVATE_KEY = PRIVATE_KEY[2:]
 SENDER_ADDRESS = Web3.to_checksum_address(os.getenv("SENDER_ADDRESS"))
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_ADDRESS = Web3.to_checksum_address(os.getenv("TOKEN_CONTRACT"))
@@ -159,6 +161,7 @@ def load_wallets(mode="random"):
 
 def send_worker(receiver):
     try:
+        receiver = Web3.to_checksum_address(receiver)
         amount = round(random.uniform(MIN_TOKEN_AMOUNT, MAX_TOKEN_AMOUNT), 4)
         token_amount = int(amount * (10 ** TOKEN_DECIMALS))
         nonce = get_next_nonce()
@@ -173,7 +176,7 @@ def send_worker(receiver):
         })
 
         signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
 
         if receipt.status == 1:
@@ -194,83 +197,16 @@ def send_worker(receiver):
             time.sleep(3)
             cancel_transaction(nonce)
 
-def countdown_timer():
-    tz = pytz.timezone('Asia/Jakarta')
-    now = datetime.now(tz)
-    next_run = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    seconds_left = int((next_run - now).total_seconds())
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold blue]⏳ Menunggu pengiriman berikutnya:"),
-        BarColumn(),
-        TimeRemainingColumn(),
-        TextColumn("[bold yellow]{task.completed} detik tersisa[/bold yellow]"),
-        transient=True,
-    ) as progress:
-        task = progress.add_task("Menunggu...", total=seconds_left)
-        while seconds_left > 0:
-            time.sleep(1)
-            seconds_left -= 1
-            progress.update(task, advance=1)
-
-    console.print("\n[bold green]🕛 Mulai ulang pengiriman token![/bold green]")
-    main()
-
-def show_intro():
-    console.rule("[bold cyan]ERC-20 Token Sender")
-    intro = "🚀 Mengirim token secara otomatis ke 200 wallet setiap hari."
-    text = Text("", style="bold magenta")
-    with Live(text, refresh_per_second=20) as live:
-        for char in intro:
-            text.append(char)
-            live.update(text)
-            time.sleep(0.03)
-    console.print("\n")
-
-def show_status_info():
-    if not os.path.exists(SENT_FILE):
-        with open(SENT_FILE, "w") as f:
-            pass
-
-    balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / 10**TOKEN_DECIMALS
-    sent_today = len(open(SENT_FILE).readlines())
-    table = Table(title="📊 Status Wallet")
-    table.add_column("Item", style="cyan", no_wrap=True)
-    table.add_column("Detail", style="magenta")
-    table.add_row("💼 Wallet", f"{SENDER_ADDRESS[:10]}...")
-    table.add_row("💰 Sisa Token", f"{balance:,.2f}")
-    table.add_row("📤 Terkirim Hari Ini", f"{sent_today}/{DAILY_WALLET_LIMIT}")
-    console.print(table)
-
-def main():
-    show_intro()
-    show_status_info()
+if __name__ == "__main__":
+    console.print(Panel("[bold cyan]🚀 ERC20 Multi Sender CLI Bot[/bold cyan]", expand=False))
     selection_mode = Prompt.ask("Pilih metode pengambilan wallet", choices=["random", "sequential"], default="random")
     wallets = load_wallets(selection_mode)
-    console.print(f"[blue]📦 Jumlah wallet yang akan dikirim: {len(wallets)}[/blue]")
 
-    if not wallets:
-        console.print("[yellow]📭 Semua wallet sudah dikirimi token hari ini.[/yellow]")
-        countdown_timer()
-        return
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        "[progress.percentage]{task.percentage:>3.0f}%",
-        TimeRemainingColumn(),
-        transient=True,
-    ) as progress:
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TimeRemainingColumn(), console=console) as progress:
         task = progress.add_task("Mengirim token...", total=len(wallets))
         with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
             futures = [executor.submit(send_worker, wallet) for wallet in wallets]
-            for future in as_completed(futures):
-                progress.advance(task)
+            for _ in as_completed(futures):
+                progress.update(task, advance=1)
 
-    console.print(Panel("[bold green]🎉 Pengiriman selesai![/bold green]"))
-    countdown_timer()
-
-if __name__ == "__main__":
-    main()
+    console.print(Panel("[green]✅ Pengiriman selesai. Bot akan dijadwalkan ulang untuk esok hari.[/green]", expand=False))
