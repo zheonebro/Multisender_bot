@@ -192,9 +192,9 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
                 console.print(msg)
                 with file_lock:
                     with open(SENT_FILE, "a") as f:
-                        f.write(f"{receiver}\n")
+                        f.write(f"{receiver}|{datetime.now(JAKARTA_TZ).strftime('%Y-%m-%d')}\n")
                     with open(TRANSACTION_LOG, "a") as logf:
-                        logf.write(f"{datetime.now(pytz.timezone('Asia/Jakarta'))} | {receiver} | {amount} | {tx_hash.hex()} | Gas Used: {receipt.gasUsed}\n")
+                        logf.write(f"{datetime.now(JAKARTA_TZ)} | {receiver} | {amount} | {tx_hash.hex()} | Gas Used: {receipt.gasUsed}\n")
                 return amount
             else:
                 raise Exception("Transaksi gagal (status != 1)")
@@ -237,6 +237,11 @@ def get_next_reset_time():
 
 def countdown_to_next_day():
     next_reset = get_next_reset_time()
+    animation_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]  # Spinner ASCII
+    colors = ["cyan", "green", "yellow", "magenta"]  # Warna berputar
+    frame_idx = 0
+    color_idx = 0
+
     with Live(console=console, refresh_per_second=4) as live:
         while True:
             now = datetime.now(JAKARTA_TZ)
@@ -246,19 +251,31 @@ def countdown_to_next_day():
 
             hours, remainder = divmod(int(time_left.total_seconds()), 3600)
             minutes, seconds = divmod(remainder, 60)
-            frames = ["⏳", "⌛", "⏰", "⏲️"]
-            frame = frames[int(time.time() * 4) % 4]
 
-            countdown_text = Text(f"{frame} Menunggu pengiriman berikutnya dalam: {hours:02d}:{minutes:02d}:{seconds:02d}", style="bold cyan")
+            # Update animasi
+            spinner = animation_frames[frame_idx]
+            color = colors[color_idx]
+            frame_idx = (frame_idx + 1) % len(animation_frames)
+            if frame_idx == 0:  # Ganti warna setiap siklus spinner selesai
+                color_idx = (color_idx + 1) % len(colors)
+
+            # Buat teks animasi
+            countdown_text = Text(
+                f"{spinner} Menunggu pengiriman hari berikutnya...\n"
+                f"Waktu Tersisa: {hours:02d}:{minutes:02d}:{seconds:02d}",
+                style=f"bold {color}"
+            )
             panel = Panel(
                 countdown_text,
-                title="⏱️ Countdown Pengiriman Harian",
-                border_style="green",
+                title="[blink]⏳ Idle Time[/blink]",
+                subtitle=f"Reset pada: {next_reset.strftime('%Y-%m-%d %H:%M:%S %Z')}",
+                border_style=color,
                 box=box.ROUNDED,
-                padding=(1, 2)
+                padding=(1, 2),
+                expand=False
             )
             live.update(panel)
-            time.sleep(0.25)
+            time.sleep(0.25)  # Refresh rate sesuai refresh_per_second=4
 
     console.print("[bold green]⏰ Waktu reset tercapai! Memulai pengiriman baru...[/bold green]")
 
@@ -283,27 +300,34 @@ if __name__ == "__main__":
             console.print(f"[red]❌ Saldo pengirim tidak cukup: {sender_balance} < {MAX_TOTAL_SEND}[/red]")
             exit()
 
+        # Baca semua wallet dari CSV
+        with open(CSV_FILE, "r") as f:
+            reader = csv.reader(f)
+            all_wallets = [line[0].strip() for line in reader if line and Web3.is_address(line[0].strip())]
+            if not all_wallets:
+                logger.error("❌ Tidak ada alamat dompet yang valid di wallets.csv")
+                console.print("[red]❌ Tidak ada alamat dompet yang valid di wallets.csv[/red]")
+                exit()
+
+        # Filter wallet yang belum dikirim hari ini
         sent_wallets = set()
         if os.path.exists(SENT_FILE):
             with open(SENT_FILE, "r") as f:
                 for line in f:
                     wallet, timestamp = line.strip().split("|") if "|" in line else (line.strip(), "1970-01-01")
-                    sent_wallets.add(wallet)
+                    if datetime.strptime(timestamp, "%Y-%m-%d").date() == datetime.now(JAKARTA_TZ).date():
+                        sent_wallets.add(wallet)
 
-        with open(CSV_FILE, "r") as f:
-            reader = csv.reader(f)
-            wallets = [
-                line[0].strip()
-                for line in reader
-                if line and Web3.is_address(line[0].strip()) and line[0].strip() not in sent_wallets
-            ]
-            if not wallets:
-                logger.error("❌ Tidak ada alamat dompet yang valid di wallets.csv")
-                console.print("[red]❌ Tidak ada alamat dompet yang valid di wallets.csv[/red]")
-                exit()
-        logger.info(f"Jumlah dompet yang akan diproses: {min(len(wallets), DAILY_WALLET_LIMIT - sent_count)}")
+        wallets_to_process = [w for w in all_wallets if w not in sent_wallets]
+        logger.info(f"Jumlah dompet yang akan diproses hari ini: {min(len(wallets_to_process), DAILY_WALLET_LIMIT - sent_count)}")
 
-        random.shuffle(wallets)
+        if not wallets_to_process:
+            logger.info("✅ Semua wallet dalam daftar telah diproses hari ini.")
+            console.print("[green]✅ Semua wallet dalam daftar telah diproses hari ini![/green]")
+            countdown_to_next_day()
+            continue
+
+        random.shuffle(wallets_to_process)
         total_sent = 0
         with Progress(
             SpinnerColumn(),
@@ -313,10 +337,10 @@ if __name__ == "__main__":
             TimeRemainingColumn(),
             console=console,
         ) as progress:
-            task = progress.add_task("Mengirim token...", total=min(len(wallets), DAILY_WALLET_LIMIT - sent_count))
+            task = progress.add_task("Mengirim token...", total=min(len(wallets_to_process), DAILY_WALLET_LIMIT - sent_count))
             with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
                 futures = []
-                for receiver in wallets[:DAILY_WALLET_LIMIT - sent_count]:
+                for receiver in wallets_to_process[:DAILY_WALLET_LIMIT - sent_count]:
                     if total_sent >= MAX_TOTAL_SEND:
                         logger.warning("⚠️ Batas maksimum total pengiriman tercapai")
                         break
@@ -332,11 +356,23 @@ if __name__ == "__main__":
                     progress.advance(task)
                     time.sleep(0.3)
 
-        logger.info(f"Selesai! Total token dikirim: {total_sent}")
-        console.print(Panel(f"[green]✅ Selesai! Total token dikirim: {total_sent}[/green]"))
+        # Tampilkan ringkasan harian
+        logger.info(f"Selesai! Total token dikirim hari ini: {total_sent}")
+        console.print(Panel(
+            f"[green]✅ Selesai Hari Ini!\n"
+            f"Total Token Dikirim: {total_sent}\n"
+            f"Dompet Diproses: {sent_count + len(futures)}\n"
+            f"Saldo Tersisa: {sender_balance:.4f} token[/green]",
+            title="Ringkasan Harian",
+            border_style="green"
+        ))
 
-        # Jadwalkan untuk hari esok
-        next_reset = get_next_reset_time()
-        console.print(f"[cyan]📅 Pengiriman berikutnya dijadwalkan pada: {next_reset.strftime('%Y-%m-%d %H:%M:%S %Z')}[/cyan]")
-        logger.info(f"Pengiriman berikutnya dijadwalkan pada: {next_reset}")
-        countdown_to_next_day()
+        # Cek apakah semua wallet telah diproses atau kuota tercapai
+        remaining_wallets = [w for w in all_wallets if w not in sent_wallets]
+        if not remaining_wallets or total_sent >= MAX_TOTAL_SEND or sent_count + len(futures) >= DAILY_WALLET_LIMIT:
+            logger.info("✅ Pengiriman harian selesai atau kuota tercapai. Menunggu hari berikutnya.")
+            console.print("[cyan]📅 Menunggu reset harian untuk pengiriman ulang...[/cyan]")
+            countdown_to_next_day()
+        else:
+            logger.info("🔄 Melanjutkan pengiriman ke wallet tersisa hari ini.")
+            console.print("[cyan]🔄 Melanjutkan pengiriman ke wallet tersisa...[/cyan]")
