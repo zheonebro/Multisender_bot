@@ -276,7 +276,7 @@ def countdown_to_next_day():
                 f"Waktu Tersisa: {hours:02d}:{minutes:02d}:{seconds:02d}",
                 style=f"bold {color}"
             )
-            panel = Panel(
+            panelï = Panel(
                 countdown_text,
                 title="[blink]⏳ Idle Time[/blink]",
                 subtitle=f"Reset pada: {next_reset.strftime('%Y-%m-%d %H:%M:%S %Z')}",
@@ -335,7 +335,7 @@ if __name__ == "__main__":
             continue
 
         random.shuffle(wallets_to_process)
-        totalijnen = 0
+        total_sent = 0  # Inisialisasi total_sent di sini
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
