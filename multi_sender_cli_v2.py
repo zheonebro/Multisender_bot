@@ -15,7 +15,7 @@ from rich.text import Text
 from rich import box
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Semaphore, Lock
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from web3.exceptions import Web3RPCError  # Impor exception dari web3.exceptions
 
 # Setup logging
 logging.basicConfig(
@@ -102,8 +102,13 @@ def get_next_nonce():
 def refresh_nonce():
     with nonce_lock:
         global global_nonce
-        global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
-        logger.info(f"🔄 Nonce di-refresh ke: {global_nonce}")
+        try:
+            global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
+            logger.info(f"🔄 Nonce di-refresh ke: {global_nonce}")
+        except Web3RPCError as e:
+            logger.error(f"❌ Gagal refresh nonce: {e}")
+            time.sleep(5)  # Tunggu sebelum coba lagi
+            global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
 
 def get_gas_price(attempt=1):
     try:
@@ -116,40 +121,39 @@ def get_gas_price(attempt=1):
         logger.warning(f"⚠️ Gagal mengambil harga gas: {e}. Menggunakan default.")
         return MAX_GAS_PRICE_GWEI
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(w3.exceptions.Web3RPCError)
-)
-def cancel_transaction(nonce):
-    try:
-        gas_price = get_gas_price(attempt=2)
-        tx = {
-            'from': SENDER_ADDRESS,
-            'to': SENDER_ADDRESS,
-            'value': 0,
-            'nonce': nonce,
-            'gas': 21000,
-            'gasPrice': w3.to_wei(gas_price, 'gwei'),
-            'chainId': w3.eth.chain_id
-        }
-        signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-        console.print(f"[yellow]🚫 Membatalkan nonce {nonce}: {tx_hash.hex()[:10]}...[/yellow]")
-        logger.info(f"Membatalkan transaksi nonce {nonce} dengan tx_hash: {tx_hash.hex()}")
-        w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-        return tx_hash
-    except Exception as e:
-        if "already known" in str(e):
+def cancel_transaction(nonce, max_attempts=3):
+    for attempt in range(1, max_attempts + 1):
+        try:
+            gas_price = get_gas_price(attempt=2)
+            tx = {
+                'from': SENDER_ADDRESS,
+                'to': SENDER_ADDRESS,
+                'value': 0,
+                'nonce': nonce,
+                'gas': 21000,
+                'gasPrice': w3.to_wei(gas_price, 'gwei'),
+                'chainId': w3.eth.chain_id
+            }
+            signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            console.print(f"[yellow]🚫 Membatalkan nonce {nonce}: {tx_hash.hex()[:10]}...[/yellow]")
+            logger.info(f"Membatalkan transaksi nonce {nonce} dengan tx_hash: {tx_hash.hex()}")
+            w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            return tx_hash
+        except Web3RPCError as e:
+            if "capacity exceeded" in str(e):
+                logger.warning(f"⚠️ Kapasitas node penuh saat membatalkan nonce {nonce}. Mencoba lagi ({attempt}/{max_attempts})")
+                time.sleep(2 * attempt)  # Penundaan eksponensial
+                continue
+            logger.error(f"❌ Gagal membatalkan nonce {nonce}: {e}")
             return None
-        logger.error(f"Gagal membatalkan nonce {nonce}: {e}")
-        raise
+        except Exception as e:
+            if "already known" in str(e):
+                return None
+            logger.error(f"❌ Gagal membatalkan nonce {nonce}: {e}")
+            time.sleep(2)
+    return None
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(w3.exceptions.Web3RPCError)
-)
 def send_worker(receiver, get_next_nonce_func, max_retries=3):
     with RPC_SEMAPHORE:
         if not Web3.is_address(receiver):
@@ -202,13 +206,18 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
                 else:
                     raise Exception("Transaksi gagal (status != 1)")
 
-            except w3.exceptions.Web3RPCError as e:
+            except Web3RPCError as e:
                 error_msg = str(e)
                 logger.error(f"❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}")
                 console.print(f"[red]❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}[/red]")
                 if "capacity exceeded" in error_msg and attempt < max_retries:
+                    time.sleep(2 * attempt)  # Penundaan eksponensial
                     continue
-                raise
+                if attempt == max_retries:
+                    logger.error(f"❌ Gagal mengirim ke {receiver} setelah {max_retries} percobaan")
+                    cancel_transaction(nonce)
+                    refresh_nonce()
+                return 0
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}")
@@ -326,7 +335,7 @@ if __name__ == "__main__":
             continue
 
         random.shuffle(wallets_to_process)
-        total_sent = 0
+        totalijnen = 0
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
