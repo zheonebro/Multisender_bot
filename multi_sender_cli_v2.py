@@ -15,6 +15,7 @@ from rich.text import Text
 from rich import box
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Semaphore, Lock
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # Setup logging
 logging.basicConfig(
@@ -91,131 +92,136 @@ nonce_lock = Lock()
 file_lock = Lock()
 global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
 
-
 def get_next_nonce():
     with nonce_lock:
         global global_nonce
-        pending_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
-        if pending_nonce > global_nonce:
-            global_nonce = pending_nonce
         current_nonce = global_nonce
         global_nonce += 1
         return current_nonce
 
+def refresh_nonce():
+    with nonce_lock:
+        global global_nonce
+        global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
+        logger.info(f"🔄 Nonce di-refresh ke: {global_nonce}")
 
-def get_gas_price(attempt=1, previous=None):
+def get_gas_price(attempt=1):
     try:
         latest_block = w3.eth.get_block('latest')
         base_fee = latest_block['baseFeePerGas'] / 10**9
-        multiplier = 1.5 + (attempt - 1) * 1.0
+        multiplier = 1.5 + (attempt - 1) * 0.5
         gas_price = base_fee * multiplier
-        if previous and gas_price <= previous:
-            gas_price = previous * 1.2
         return min(gas_price, MAX_GAS_PRICE_GWEI)
     except Exception as e:
-        logger.error(f"❌ Gagal mengambil harga gas: {e}")
+        logger.warning(f"⚠️ Gagal mengambil harga gas: {e}. Menggunakan default.")
         return MAX_GAS_PRICE_GWEI
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception_type(w3.exceptions.Web3RPCError)
+)
+def cancel_transaction(nonce):
+    try:
+        gas_price = get_gas_price(attempt=2)
+        tx = {
+            'from': SENDER_ADDRESS,
+            'to': SENDER_ADDRESS,
+            'value': 0,
+            'nonce': nonce,
+            'gas': 21000,
+            'gasPrice': w3.to_wei(gas_price, 'gwei'),
+            'chainId': w3.eth.chain_id
+        }
+        signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        console.print(f"[yellow]🚫 Membatalkan nonce {nonce}: {tx_hash.hex()[:10]}...[/yellow]")
+        logger.info(f"Membatalkan transaksi nonce {nonce} dengan tx_hash: {tx_hash.hex()}")
+        w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+        return tx_hash
+    except Exception as e:
+        if "already known" in str(e):
+            return None
+        logger.error(f"Gagal membatalkan nonce {nonce}: {e}")
+        raise
 
-def cancel_transaction(nonce, max_attempts=3):
-    for attempt in range(1, max_attempts + 1):
-        try:
-            gas_price = get_gas_price(attempt * 2)
-            tx = {
-                'from': SENDER_ADDRESS,
-                'to': SENDER_ADDRESS,
-                'value': 0,
-                'nonce': nonce,
-                'gas': 21000,
-                'gasPrice': w3.to_wei(gas_price, 'gwei'),
-                'chainId': w3.eth.chain_id
-            }
-            signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-            raw_tx = signed_tx.rawTransaction if hasattr(signed_tx, 'rawTransaction') else signed_tx.raw_transaction
-            tx_hash = w3.eth.send_raw_transaction(raw_tx)
-            console.print(f"[yellow]🚫 Membatalkan nonce {nonce} (percobaan {attempt}): {tx_hash.hex()[:10]}...[/yellow]")
-            logger.info(f"Membatalkan transaksi nonce {nonce} dengan tx_hash: {tx_hash.hex()}")
-            w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-            return tx_hash
-        except Exception as e:
-            if "already known" in str(e):
-                return None
-            logger.error(f"Gagal membatalkan nonce {nonce} (percobaan {attempt}): {e}")
-            time.sleep(2)
-    return None
-
-
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception_type(w3.exceptions.Web3RPCError)
+)
 def send_worker(receiver, get_next_nonce_func, max_retries=3):
-    if not Web3.is_address(receiver):
-        logger.error(f"❌ Alamat tidak valid: {receiver}")
-        console.print(f"[red]❌ Alamat tidak valid: {receiver}[/red]")
+    with RPC_SEMAPHORE:
+        if not Web3.is_address(receiver):
+            logger.error(f"❌ Alamat tidak valid: {receiver}")
+            console.print(f"[red]❌ Alamat tidak valid: {receiver}[/red]")
+            return 0
+
+        receiver = Web3.to_checksum_address(receiver)
+        amount = round(random.uniform(MIN_TOKEN_AMOUNT, MAX_TOKEN_AMOUNT), 4)
+        token_amount = int(amount * (10 ** TOKEN_DECIMALS))
+
+        sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
+        if sender_balance < amount:
+            logger.error(f"❌ Saldo pengirim tidak cukup untuk {receiver}: {sender_balance} < {amount} token")
+            console.print(f"[red]❌ Saldo pengirim tidak cukup untuk {receiver}: {sender_balance} < {amount}[/red]")
+            return 0
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                gas_price = get_gas_price(attempt)
+                nonce = get_next_nonce_func()
+                logger.info(f"Memulai transaksi ke {receiver} | Nonce: {nonce} | Jumlah: {amount} token | Harga Gas: {gas_price:.1f} gwei")
+                console.print(f"[blue]🧾 TX ke {receiver} | Nonce: {nonce} | Harga Gas: {gas_price:.1f} gwei[/blue]")
+                time.sleep(random.uniform(0.5, 1.5))
+
+                tx = token_contract.functions.transfer(receiver, token_amount).build_transaction({
+                    'from': SENDER_ADDRESS,
+                    'nonce': nonce,
+                    'gas': 100000,
+                    'gasPrice': w3.to_wei(gas_price, 'gwei'),
+                    'chainId': w3.eth.chain_id
+                })
+
+                signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+                tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+                logger.info(f"Transaksi dikirim ke {receiver} | TX Hash: {tx_hash.hex()} | Menunggu konfirmasi...")
+                receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+                if receipt.status == 1:
+                    sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
+                    msg = f"✅ Berhasil mengirim {amount} token ke {receiver} | TX: {tx_hash.hex()}"
+                    logger.info(f"{msg} | Gas Used: {receipt.gasUsed}")
+                    console.print(msg)
+                    with file_lock:
+                        with open(SENT_FILE, "a") as f:
+                            f.write(f"{receiver}|{datetime.now(JAKARTA_TZ).strftime('%Y-%m-%d')}\n")
+                        with open(TRANSACTION_LOG, "a") as logf:
+                            logf.write(f"{datetime.now(JAKARTA_TZ)} | {receiver} | {amount} | {tx_hash.hex()} | Gas Used: {receipt.gasUsed}\n")
+                    return amount
+                else:
+                    raise Exception("Transaksi gagal (status != 1)")
+
+            except w3.exceptions.Web3RPCError as e:
+                error_msg = str(e)
+                logger.error(f"❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}")
+                console.print(f"[red]❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}[/red]")
+                if "capacity exceeded" in error_msg and attempt < max_retries:
+                    continue
+                raise
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}")
+                console.print(f"[red]❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}[/red]")
+                if "nonce too low" in error_msg or "replacement transaction underpriced" in error_msg:
+                    refresh_nonce()
+                    continue
+                if attempt == max_retries:
+                    logger.error(f"❌ Gagal mengirim ke {receiver} setelah {max_retries} percobaan")
+                    cancel_transaction(nonce)
+                    refresh_nonce()
+                time.sleep(3)
         return 0
-
-    receiver = Web3.to_checksum_address(receiver)
-    amount = round(random.uniform(MIN_TOKEN_AMOUNT, MAX_TOKEN_AMOUNT), 4)
-    token_amount = int(amount * (10 ** TOKEN_DECIMALS))
-    retry_delay = 3
-
-    sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
-    if sender_balance < amount:
-        logger.error(f"❌ Saldo pengirim tidak cukup untuk {receiver}: {sender_balance} < {amount} token")
-        console.print(f"[red]❌ Saldo pengirim tidak cukup untuk {receiver}: {sender_balance} < {amount}[/red]")
-        return 0
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            gas_price = get_gas_price(attempt)
-            nonce = get_next_nonce_func()
-            logger.info(f"Memulai transaksi ke {receiver} | Nonce: {nonce} | Jumlah: {amount} token | Harga Gas: {gas_price:.1f} gwei")
-            console.print(f"[blue]🧾 TX ke {receiver} | Nonce: {nonce} | Harga Gas: {gas_price:.1f} gwei[/blue]")
-            time.sleep(random.uniform(0.4, 1.2))
-
-            tx = token_contract.functions.transfer(receiver, token_amount).build_transaction({
-                'from': SENDER_ADDRESS,
-                'nonce': nonce,
-                'gas': 100000,
-                'gasPrice': w3.to_wei(gas_price, 'gwei'),
-                'chainId': w3.eth.chain_id
-            })
-
-            signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-            raw_tx = getattr(signed_tx, 'rawTransaction', getattr(signed_tx, 'raw_transaction', None))
-            tx_hash = w3.eth.send_raw_transaction(raw_tx)
-            logger.info(f"Transaksi dikirim ke {receiver} | TX Hash: {tx_hash.hex()} | Menunggu konfirmasi...")
-            time.sleep(random.uniform(2, 4))
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-
-            if receipt.status == 1:
-                sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
-                msg = f"✅ Berhasil mengirim {amount} token ke {receiver} | TX: {tx_hash.hex()}"
-                logger.info(f"{msg} | Gas Used: {receipt.gasUsed}")
-                console.print(msg)
-                with file_lock:
-                    with open(SENT_FILE, "a") as f:
-                        f.write(f"{receiver}|{datetime.now(JAKARTA_TZ).strftime('%Y-%m-%d')}\n")
-                    with open(TRANSACTION_LOG, "a") as logf:
-                        logf.write(f"{datetime.now(JAKARTA_TZ)} | {receiver} | {amount} | {tx_hash.hex()} | Gas Used: {receipt.gasUsed}\n")
-                return amount
-            else:
-                raise Exception("Transaksi gagal (status != 1)")
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}")
-            console.print(f"[red]❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}[/red]")
-            if "replacement transaction underpriced" in error_msg and attempt < max_retries:
-                logger.warning(f"⚠️ Harga gas terlalu rendah untuk nonce {nonce}, mencoba lagi dengan gas lebih tinggi")
-                continue
-            time.sleep(retry_delay)
-            if attempt == max_retries:
-                logger.error(f"❌ Gagal mengirim ke {receiver} setelah {max_retries} percobaan")
-                cancel_transaction(nonce)
-                with nonce_lock:
-                    global global_nonce
-                    global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
-                    logger.warning("🔁 Nonce di-reset karena kegagalan transaksi")
-    return 0
-
 
 def check_daily_quota():
     today = datetime.now(JAKARTA_TZ).date()
@@ -228,17 +234,15 @@ def check_daily_quota():
                     sent_wallets.add(wallet)
     return len(sent_wallets) >= DAILY_WALLET_LIMIT, len(sent_wallets)
 
-
 def get_next_reset_time():
     now = datetime.now(JAKARTA_TZ)
     next_day = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     return next_day
 
-
 def countdown_to_next_day():
     next_reset = get_next_reset_time()
-    animation_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]  # Spinner ASCII
-    colors = ["cyan", "green", "yellow", "magenta"]  # Warna berputar
+    animation_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    colors = ["cyan", "green", "yellow", "magenta"]
     frame_idx = 0
     color_idx = 0
 
@@ -252,14 +256,12 @@ def countdown_to_next_day():
             hours, remainder = divmod(int(time_left.total_seconds()), 3600)
             minutes, seconds = divmod(remainder, 60)
 
-            # Update animasi
             spinner = animation_frames[frame_idx]
             color = colors[color_idx]
             frame_idx = (frame_idx + 1) % len(animation_frames)
-            if frame_idx == 0:  # Ganti warna setiap siklus spinner selesai
+            if frame_idx == 0:
                 color_idx = (color_idx + 1) % len(colors)
 
-            # Buat teks animasi
             countdown_text = Text(
                 f"{spinner} Menunggu pengiriman hari berikutnya...\n"
                 f"Waktu Tersisa: {hours:02d}:{minutes:02d}:{seconds:02d}",
@@ -275,16 +277,14 @@ def countdown_to_next_day():
                 expand=False
             )
             live.update(panel)
-            time.sleep(0.25)  # Refresh rate sesuai refresh_per_second=4
+            time.sleep(0.25)
 
     console.print("[bold green]⏰ Waktu reset tercapai! Memulai pengiriman baru...[/bold green]")
-
 
 if __name__ == "__main__":
     while True:
         console.print(Panel("[bold cyan]🚀 Memulai pengiriman token...[/bold cyan]"))
 
-        # Cek kuota harian
         quota_full, sent_count = check_daily_quota()
         logger.info(f"Memeriksa kuota harian: {sent_count}/{DAILY_WALLET_LIMIT} dompet telah diproses hari ini")
         if quota_full:
@@ -300,7 +300,6 @@ if __name__ == "__main__":
             console.print(f"[red]❌ Saldo pengirim tidak cukup: {sender_balance} < {MAX_TOTAL_SEND}[/red]")
             exit()
 
-        # Baca semua wallet dari CSV
         with open(CSV_FILE, "r") as f:
             reader = csv.reader(f)
             all_wallets = [line[0].strip() for line in reader if line and Web3.is_address(line[0].strip())]
@@ -309,7 +308,6 @@ if __name__ == "__main__":
                 console.print("[red]❌ Tidak ada alamat dompet yang valid di wallets.csv[/red]")
                 exit()
 
-        # Filter wallet yang belum dikirim hari ini
         sent_wallets = set()
         if os.path.exists(SENT_FILE):
             with open(SENT_FILE, "r") as f:
@@ -346,17 +344,17 @@ if __name__ == "__main__":
                         break
                     futures.append(executor.submit(send_worker, receiver, get_next_nonce))
                 for future in as_completed(futures):
-                    sent = future.result()
-                    total_sent += sent
-                    sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
-                    logger.info(f"Progres sementara: Total token dikirim = {total_sent} | Saldo pengirim tersisa: {sender_balance} token")
-                    with file_lock:
-                        with open(SENT_FILE, "a") as f:
-                            f.write(f"{receiver}|{datetime.now(JAKARTA_TZ).strftime('%Y-%m-%d')}\n")
-                    progress.advance(task)
-                    time.sleep(0.3)
+                    try:
+                        sent = future.result()
+                        total_sent += sent
+                        sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
+                        logger.info(f"Progres sementara: Total token dikirim = {total_sent} | Saldo pengirim tersisa: {sender_balance} token")
+                        progress.advance(task)
+                    except Exception as e:
+                        logger.error(f"❌ Error di thread: {e}")
+                        console.print(f"[red]❌ Error di thread: {e}[/red]")
+                    time.sleep(0.5)
 
-        # Tampilkan ringkasan harian
         logger.info(f"Selesai! Total token dikirim hari ini: {total_sent}")
         console.print(Panel(
             f"[green]✅ Selesai Hari Ini!\n"
@@ -367,7 +365,6 @@ if __name__ == "__main__":
             border_style="green"
         ))
 
-        # Cek apakah semua wallet telah diproses atau kuota tercapai
         remaining_wallets = [w for w in all_wallets if w not in sent_wallets]
         if not remaining_wallets or total_sent >= MAX_TOTAL_SEND or sent_count + len(futures) >= DAILY_WALLET_LIMIT:
             logger.info("✅ Pengiriman harian selesai atau kuota tercapai. Menunggu hari berikutnya.")
