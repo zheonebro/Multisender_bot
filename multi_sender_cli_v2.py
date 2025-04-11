@@ -135,7 +135,7 @@ def cancel_transaction(nonce, max_attempts=3):
                 'chainId': w3.eth.chain_id
             }
             signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)  # Perbaikan: raw_transaction
             console.print(f"[yellow]🚫 Membatalkan nonce {nonce}: {tx_hash.hex()[:10]}...[/yellow]")
             logger.info(f"Membatalkan transaksi nonce {nonce} dengan tx_hash: {tx_hash.hex()}")
             w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
@@ -188,7 +188,7 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
                 })
 
                 signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-                tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+                tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)  # Perbaikan: raw_transaction
                 logger.info(f"Transaksi dikirim ke {receiver} | TX Hash: {tx_hash.hex()} | Menunggu konfirmasi...")
                 receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
@@ -276,7 +276,7 @@ def countdown_to_next_day():
                 f"Waktu Tersisa: {hours:02d}:{minutes:02d}:{seconds:02d}",
                 style=f"bold {color}"
             )
-            panelï = Panel(
+            panel = Panel(
                 countdown_text,
                 title="[blink]⏳ Idle Time[/blink]",
                 subtitle=f"Reset pada: {next_reset.strftime('%Y-%m-%d %H:%M:%S %Z')}",
@@ -335,7 +335,7 @@ if __name__ == "__main__":
             continue
 
         random.shuffle(wallets_to_process)
-        total_sent = 0  # Inisialisasi total_sent di sini
+        total_sent = 0  # Inisialisasi total_sent
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
