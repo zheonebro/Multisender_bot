@@ -12,10 +12,11 @@ from rich.panel import Panel
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, SpinnerColumn
 from rich.live import Live
 from rich.text import Text
+from rich.table import Table
 from rich import box
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Semaphore, Lock
-from web3.exceptions import Web3RPCError  # Impor exception dari web3.exceptions
+from web3.exceptions import Web3RPCError, TransactionNotFound
 
 # Setup logging
 logging.basicConfig(
@@ -107,19 +108,20 @@ def refresh_nonce():
             logger.info(f"🔄 Nonce di-refresh ke: {global_nonce}")
         except Web3RPCError as e:
             logger.error(f"❌ Gagal refresh nonce: {e}")
-            time.sleep(5)  # Tunggu sebelum coba lagi
+            time.sleep(5)
             global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
 
 def get_gas_price(attempt=1):
     try:
-        latest_block = w3.eth.get_block('latest')
-        base_fee = latest_block['baseFeePerGas'] / 10**9
-        multiplier = 1.5 + (attempt - 1) * 0.5
-        gas_price = base_fee * multiplier
+        # Gunakan estimasi gas dari jaringan sebagai baseline
+        base_fee = w3.eth.fee_history(1, "latest", reward_percentiles=[20])["baseFeePerGas"][-1] / 10**9
+        priority_fee = w3.eth.max_priority_fee / 10**9
+        multiplier = 1.2 + (attempt - 1) * 0.3  # Kurangi multiplier untuk menghindari gas berlebihan
+        gas_price = (base_fee + priority_fee) * multiplier
         return min(gas_price, MAX_GAS_PRICE_GWEI)
     except Exception as e:
         logger.warning(f"⚠️ Gagal mengambil harga gas: {e}. Menggunakan default.")
-        return MAX_GAS_PRICE_GWEI
+        return min(w3.eth.gas_price / 10**9, MAX_GAS_PRICE_GWEI)
 
 def cancel_transaction(nonce, max_attempts=3):
     for attempt in range(1, max_attempts + 1):
@@ -135,7 +137,7 @@ def cancel_transaction(nonce, max_attempts=3):
                 'chainId': w3.eth.chain_id
             }
             signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)  # Perbaikan: raw_transaction
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
             console.print(f"[yellow]🚫 Membatalkan nonce {nonce}: {tx_hash.hex()[:10]}...[/yellow]")
             logger.info(f"Membatalkan transaksi nonce {nonce} dengan tx_hash: {tx_hash.hex()}")
             w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
@@ -143,7 +145,7 @@ def cancel_transaction(nonce, max_attempts=3):
         except Web3RPCError as e:
             if "capacity exceeded" in str(e):
                 logger.warning(f"⚠️ Kapasitas node penuh saat membatalkan nonce {nonce}. Mencoba lagi ({attempt}/{max_attempts})")
-                time.sleep(2 * attempt)  # Penundaan eksponensial
+                time.sleep(2 * attempt)
                 continue
             logger.error(f"❌ Gagal membatalkan nonce {nonce}: {e}")
             return None
@@ -153,6 +155,31 @@ def cancel_transaction(nonce, max_attempts=3):
             logger.error(f"❌ Gagal membatalkan nonce {nonce}: {e}")
             time.sleep(2)
     return None
+
+def display_initial_status():
+    try:
+        sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
+        gas_price = get_gas_price()
+        eth_balance = w3.eth.get_balance(SENDER_ADDRESS) / 10**18
+        estimated_gas_cost = (100000 * w3.to_wei(gas_price, 'gwei')) / 10**18  # Estimasi untuk 1 TX
+        
+        table = Table(title="Status Awal", box=box.ROUNDED, style="cyan")
+        table.add_column("Parameter", style="bold magenta")
+        table.add_column("Nilai", style="bold green")
+        
+        table.add_row("Saldo Token", f"{sender_balance:.4f} token")
+        table.add_row("Harga Gas Saat Ini", f"{gas_price:.2f} Gwei")
+        table.add_row("Estimasi Biaya Gas per TX", f"{estimated_gas_cost:.6f} ETH")
+        table.add_row("Saldo ETH Pengirim", f"{eth_balance:.4f} ETH")
+        
+        console.print(Panel(table, title="[bold cyan]📊 Informasi Awal[/bold cyan]", border_style="cyan"))
+        logger.info(f"Status awal - Saldo Token: {sender_balance}, Gas Price: {gas_price} Gwei, ETH Balance: {eth_balance}")
+        
+        return sender_balance, eth_balance
+    except Exception as e:
+        logger.error(f"❌ Gagal mengambil status awal: {e}")
+        console.print(f"[red]❌ Gagal mengambil status awal: {e}[/red]")
+        return 0, 0
 
 def send_worker(receiver, get_next_nonce_func, max_retries=3):
     with RPC_SEMAPHORE:
@@ -188,8 +215,18 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
                 })
 
                 signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-                tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)  # Perbaikan: raw_transaction
+                tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
                 logger.info(f"Transaksi dikirim ke {receiver} | TX Hash: {tx_hash.hex()} | Menunggu konfirmasi...")
+                
+                # Verifikasi apakah transaksi ada di mempool
+                time.sleep(5)  # Tunggu sebentar untuk memastikan masuk mempool
+                try:
+                    w3.eth.get_transaction(tx_hash)
+                except TransactionNotFound:
+                    logger.warning(f"⚠️ Transaksi {tx_hash.hex()} tidak ditemukan di mempool. Mencoba ulang...")
+                    cancel_transaction(nonce)
+                    continue
+
                 receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
                 if receipt.status == 1:
@@ -206,12 +243,17 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
                 else:
                     raise Exception("Transaksi gagal (status != 1)")
 
+            except TransactionNotFound:
+                logger.error(f"❌ Transaksi ke {receiver} tidak ditemukan di chain pada percobaan {attempt}")
+                console.print(f"[red]❌ Transaksi ke {receiver} tidak ditemukan di chain pada percobaan {attempt}[/red]")
+                cancel_transaction(nonce)
+                continue
             except Web3RPCError as e:
                 error_msg = str(e)
                 logger.error(f"❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}")
                 console.print(f"[red]❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}[/red]")
                 if "capacity exceeded" in error_msg and attempt < max_retries:
-                    time.sleep(2 * attempt)  # Penundaan eksponensial
+                    time.sleep(2 * attempt)
                     continue
                 if attempt == max_retries:
                     logger.error(f"❌ Gagal mengirim ke {receiver} setelah {max_retries} percobaan")
@@ -294,6 +336,12 @@ if __name__ == "__main__":
     while True:
         console.print(Panel("[bold cyan]🚀 Memulai pengiriman token...[/bold cyan]"))
 
+        # Tampilkan status awal
+        sender_balance, eth_balance = display_initial_status()
+        if sender_balance == 0 or eth_balance == 0:
+            logger.error("❌ Tidak dapat melanjutkan karena gagal mengambil status awal")
+            exit()
+
         quota_full, sent_count = check_daily_quota()
         logger.info(f"Memeriksa kuota harian: {sent_count}/{DAILY_WALLET_LIMIT} dompet telah diproses hari ini")
         if quota_full:
@@ -302,8 +350,6 @@ if __name__ == "__main__":
             countdown_to_next_day()
             continue
 
-        sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
-        logger.info(f"Saldo pengirim awal: {sender_balance} token")
         if sender_balance < MAX_TOTAL_SEND:
             logger.error(f"❌ Saldo pengirim tidak cukup: {sender_balance} < {MAX_TOTAL_SEND}")
             console.print(f"[red]❌ Saldo pengirim tidak cukup: {sender_balance} < {MAX_TOTAL_SEND}[/red]")
@@ -335,7 +381,7 @@ if __name__ == "__main__":
             continue
 
         random.shuffle(wallets_to_process)
-        total_sent = 0  # Inisialisasi total_sent
+        total_sent = 0
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
