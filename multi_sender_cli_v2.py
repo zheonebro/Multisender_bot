@@ -168,7 +168,7 @@ def display_initial_status():
         
         table.add_row("Saldo Token", f"{sender_balance:.4f} token")
         table.add_row("Harga Gas Saat Ini", f"{gas_price:.2f} Gwei")
-        table.add_row("Estimasi Biaya Gas per TX", f"{estimated_gas_cost:.6f} ETH")
+        table.add_row("Estimasi Biaya Gas per TX", f"{estimated_gas_cost:.6f} TEA")
         table.add_row("Saldo TEA Pengirim", f"{eth_balance:.4f} TEA")
         
         console.print(Panel(table, title="[bold cyan]📊 Informasi Awal[/bold cyan]", border_style="cyan"))
