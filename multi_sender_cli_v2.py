@@ -113,10 +113,9 @@ def refresh_nonce():
 
 def get_gas_price(attempt=1):
     try:
-        # Gunakan estimasi gas dari jaringan sebagai baseline
         base_fee = w3.eth.fee_history(1, "latest", reward_percentiles=[20])["baseFeePerGas"][-1] / 10**9
         priority_fee = w3.eth.max_priority_fee / 10**9
-        multiplier = 1.2 + (attempt - 1) * 0.3  # Kurangi multiplier untuk menghindari gas berlebihan
+        multiplier = 1.2 + (attempt - 1) * 0.3
         gas_price = (base_fee + priority_fee) * multiplier
         return min(gas_price, MAX_GAS_PRICE_GWEI)
     except Exception as e:
@@ -137,7 +136,7 @@ def cancel_transaction(nonce, max_attempts=3):
                 'chainId': w3.eth.chain_id
             }
             signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
             console.print(f"[yellow]🚫 Membatalkan nonce {nonce}: {tx_hash.hex()[:10]}...[/yellow]")
             logger.info(f"Membatalkan transaksi nonce {nonce} dengan tx_hash: {tx_hash.hex()}")
             w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
@@ -161,7 +160,7 @@ def display_initial_status():
         sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
         gas_price = get_gas_price()
         eth_balance = w3.eth.get_balance(SENDER_ADDRESS) / 10**18
-        estimated_gas_cost = (100000 * w3.to_wei(gas_price, 'gwei')) / 10**18  # Estimasi untuk 1 TX
+        estimated_gas_cost = (100000 * w3.to_wei(gas_price, 'gwei')) / 10**18
         
         table = Table(title="Status Awal", box=box.ROUNDED, style="cyan")
         table.add_column("Parameter", style="bold magenta")
@@ -170,7 +169,7 @@ def display_initial_status():
         table.add_row("Saldo Token", f"{sender_balance:.4f} token")
         table.add_row("Harga Gas Saat Ini", f"{gas_price:.2f} Gwei")
         table.add_row("Estimasi Biaya Gas per TX", f"{estimated_gas_cost:.6f} ETH")
-        table.add_row("Saldo ETH Pengirim", f"{eth_balance:.4f} ETH")
+        table.add_row("Saldo TEA Pengirim", f"{eth_balance:.4f} TEA")
         
         console.print(Panel(table, title="[bold cyan]📊 Informasi Awal[/bold cyan]", border_style="cyan"))
         logger.info(f"Status awal - Saldo Token: {sender_balance}, Gas Price: {gas_price} Gwei, ETH Balance: {eth_balance}")
@@ -215,11 +214,10 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
                 })
 
                 signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-                tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+                tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
                 logger.info(f"Transaksi dikirim ke {receiver} | TX Hash: {tx_hash.hex()} | Menunggu konfirmasi...")
                 
-                # Verifikasi apakah transaksi ada di mempool
-                time.sleep(5)  # Tunggu sebentar untuk memastikan masuk mempool
+                time.sleep(5)
                 try:
                     w3.eth.get_transaction(tx_hash)
                 except TransactionNotFound:
@@ -336,7 +334,6 @@ if __name__ == "__main__":
     while True:
         console.print(Panel("[bold cyan]🚀 Memulai pengiriman token...[/bold cyan]"))
 
-        # Tampilkan status awal
         sender_balance, eth_balance = display_initial_status()
         if sender_balance == 0 or eth_balance == 0:
             logger.error("❌ Tidak dapat melanjutkan karena gagal mengambil status awal")
