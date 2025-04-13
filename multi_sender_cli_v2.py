@@ -36,8 +36,8 @@ if PRIVATE_KEY.startswith("0x"):
 SENDER_ADDRESS = Web3.to_checksum_address(os.getenv("SENDER_ADDRESS"))
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_ADDRESS = Web3.to_checksum_address(os.getenv("TOKEN_CONTRACT"))
-# MAX_GAS_PRICE_GWEI sekarang opsional, akan dihitung dinamis jika tidak ada
 MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "0"))  # 0 berarti gunakan dinamis
+MAX_TX_FEE_ETH = 1.0  # Batas biaya transaksi maksimum (dalam ETH)
 
 MIN_TOKEN_AMOUNT = 10.0
 MAX_TOKEN_AMOUNT = 50.0
@@ -95,32 +95,34 @@ file_lock = Lock()
 global_nonce = w3.eth.get_transaction_count(SENDER_ADDRESS, "pending")
 
 def get_dynamic_max_gas_price():
-    """Menghitung batas harga gas maksimum secara dinamis berdasarkan jaringan."""
+    """Menghitung batas harga gas maksimum secara dinamis dengan batas realistis."""
     try:
-        fee_history = w3.eth.fee_history(10, "latest", reward_percentiles=[80])
-        base_fee = max(fee_history["baseFeePerGas"]) / 10**9  # Ambil base fee tertinggi
+        fee_history = w3.eth.fee_history(10, "latest", reward_percentiles=[50])  # Gunakan persentil 50 untuk stabilitas
+        base_fee = max(fee_history["baseFeePerGas"]) / 10**9
         priority_fee = w3.eth.max_priority_fee / 10**9
-        dynamic_max = (base_fee + priority_fee) * 2  # Margin 2x untuk keandalan
-        return dynamic_max
+        dynamic_max = (base_fee + priority_fee) * 1.5  # Margin 1.5x
+        # Batasi maksimum pada 500 Gwei untuk mainnet
+        return min(dynamic_max, 500)
     except Exception as e:
         logger.warning(f"⚠️ Gagal menghitung max gas dinamis: {e}. Menggunakan default.")
-        return max(w3.eth.gas_price / 10**9 * 2, 100)  # Fallback ke 2x gas_price atau minimal 100 Gwei
+        return min(w3.eth.gas_price / 10**9 * 1.5, 500)  # Fallback realistis
 
 def get_gas_price(attempt=1, max_gas_price_gwei=None):
-    """Menghitung harga gas dengan multiplier berdasarkan percobaan."""
+    """Menghitung harga gas dengan batas biaya transaksi."""
     try:
-        base_fee = w3.eth.fee_history(1, "latest", reward_percentiles=[60])["baseFeePerGas"][-1] / 10**9
+        base_fee = w3.eth.fee_history(1, "latest", reward_percentiles=[50])["baseFeePerGas"][-1] / 10**9
         priority_fee = w3.eth.max_priority_fee / 10**9
-        multiplier = 1.5 + (attempt - 1) * 0.5
+        multiplier = 1.2 + (attempt - 1) * 0.3  # Kurangi agresivitas multiplier
         gas_price = (base_fee + priority_fee) * multiplier
-        # Gunakan max_gas_price_gwei dari .env jika ada, kalau tidak hitung dinamis
         effective_max = max_gas_price_gwei if max_gas_price_gwei > 0 else get_dynamic_max_gas_price()
-        return min(gas_price, effective_max)
+        # Pastikan biaya transaksi tidak melebihi MAX_TX_FEE_ETH
+        max_gas_price_from_fee = (MAX_TX_FEE_ETH * 10**18) / 100000 / 10**9  # Gas limit 100,000
+        return min(gas_price, effective_max, max_gas_price_from_fee)
     except Exception as e:
         logger.warning(f"⚠️ Gagal mengambil harga gas: {e}. Menggunakan default.")
         default_gas_price = w3.eth.gas_price / 10**9
         effective_max = max_gas_price_gwei if max_gas_price_gwei > 0 else get_dynamic_max_gas_price()
-        return min(default_gas_price * 1.5, effective_max)
+        return min(default_gas_price * 1.2, effective_max, 500)
 
 def get_next_nonce():
     with nonce_lock:
@@ -190,15 +192,18 @@ def display_initial_status():
         table.add_row("Estimasi Biaya Gas per TX", f"{estimated_gas_cost:.6f} TEA")
         table.add_row("Saldo TEA Pengirim", f"{eth_balance:.4f} TEA")
         table.add_row("Batas Gas Maksimum", f"{MAX_GAS_PRICE_GWEI if MAX_GAS_PRICE_GWEI > 0 else dynamic_max:.2f} Gwei")
+        table.add_row("Batas Biaya TX Maksimum", f"{MAX_TX_FEE_ETH:.2f} TEA")
         
         console.print(Panel(table, title="[bold cyan]📊 Informasi Awal[/bold cyan]", border_style="cyan"))
         
-        # Peringatan jika MAX_GAS_PRICE_GWEI terlalu rendah
-        if MAX_GAS_PRICE_GWEI > 0 and MAX_GAS_PRICE_GWEI < gas_price:
-            console.print(f"[yellow]⚠️ MAX_GAS_PRICE_GWEI ({MAX_GAS_PRICE_GWEI} Gwei) lebih rendah dari harga gas jaringan ({gas_price:.2f} Gwei). Transaksi mungkin gagal![/yellow]")
+        if estimated_gas_cost > MAX_TX_FEE_ETH:
+            console.print(f"[red]❌ Estimasi biaya gas ({estimated_gas_cost:.6f} ETH) melebihi batas node ({MAX_TX_FEE_ETH} ETH). Transaksi mungkin gagal![/red]")
+            logger.error(f"Estimasi biaya gas ({estimated_gas_cost:.6f} ETH) > batas node ({MAX_TX_FEE_ETH} ETH)")
+        elif MAX_GAS_PRICE_GWEI > 0 and MAX_GAS_PRICE_GWEI < gas_price:
+            console.print(f"[yellow]⚠️ MAX_GAS_PRICE_GWEI ({MAX_GAS_PRICE_GWEI} Gwei) lebih rendah dari harga gas jaringan ({gas_price:.2f} Gwei).[/yellow]")
             logger.warning(f"MAX_GAS_PRICE_GWEI ({MAX_GAS_PRICE_GWEI}) < harga gas jaringan ({gas_price:.2f})")
         
-        logger.info(f"Status awal - Saldo Token: {sender_balance}, Gas Price: {gas_price} Gwei, ETH Balance: {eth_balance}, Max Gas: {MAX_GAS_PRICE_GWEI if MAX_GAS_PRICE_GWEI > 0 else dynamic_max} Gwei")
+        logger.info(f"Status awal - Saldo Token: {sender_balance}, Gas Price: {gas_price} Gwei, ETH Balance: {eth_balance}, Max Gas: {MAX_GAS_PRICE_GWEI if MAX_GAS_PRICE_GWEI > 0 else dynamic_max} Gwei, Max TX Fee: {MAX_TX_FEE_ETH} ETH")
         
         return sender_balance, eth_balance
     except Exception as e:
@@ -224,10 +229,15 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
             return 0
 
         eth_balance = w3.eth.get_balance(SENDER_ADDRESS) / 10**18
-        estimated_gas_cost = (100000 * w3.to_wei(get_gas_price(max_gas_price_gwei=MAX_GAS_PRICE_GWEI), 'gwei')) / 10**18
+        gas_price = get_gas_price(max_gas_price_gwei=MAX_GAS_PRICE_GWEI)
+        estimated_gas_cost = (100000 * w3.to_wei(gas_price, 'gwei')) / 10**18
         if eth_balance < estimated_gas_cost:
             logger.error(f"❌ Saldo ETH tidak cukup untuk gas: {eth_balance} < {estimated_gas_cost} ETH")
             console.print(f"[red]❌ Saldo ETH tidak cukup untuk gas: {eth_balance} < {estimated_gas_cost} ETH[/red]")
+            return 0
+        if estimated_gas_cost > MAX_TX_FEE_ETH:
+            logger.error(f"❌ Biaya gas ({estimated_gas_cost:.6f} ETH) melebihi batas node ({MAX_TX_FEE_ETH} ETH)")
+            console.print(f"[red]❌ Biaya gas ({estimated_gas_cost:.6f} ETH) melebihi batas node ({MAX_TX_FEE_ETH} ETH)[/red]")
             return 0
 
         for attempt in range(1, max_retries + 1):
@@ -281,6 +291,9 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
                 if "transaction underpriced" in error_msg:
                     logger.info(f"⚠️ Harga gas terlalu rendah. Meningkatkan gas untuk percobaan berikutnya.")
                     continue
+                if "exceeds the configured cap" in error_msg:
+                    logger.error(f"❌ Biaya gas terlalu tinggi untuk node. Membatalkan percobaan.")
+                    return 0
                 if "capacity exceeded" in error_msg and attempt < max_retries:
                     time.sleep(2 * attempt)
                     continue
