@@ -36,7 +36,7 @@ if PRIVATE_KEY.startswith("0x"):
 SENDER_ADDRESS = Web3.to_checksum_address(os.getenv("SENDER_ADDRESS"))
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_ADDRESS = Web3.to_checksum_address(os.getenv("TOKEN_CONTRACT"))
-MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "2"))  # Default ke 2 Gwei untuk Sepolia
+MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "3"))  # Default ke 3 Gwei untuk Sepolia
 MAX_TX_FEE_ETH = 0.001  # Batas biaya transaksi maksimum (dalam ETH/TEA)
 
 MIN_TOKEN_AMOUNT = 10.0
@@ -99,30 +99,31 @@ def get_dynamic_max_gas_price():
     try:
         fee_history = w3.eth.fee_history(10, "latest", reward_percentiles=[50])  # Gunakan persentil 50 untuk stabilitas
         base_fee = max(fee_history["baseFeePerGas"]) / 10**9
-        priority_fee = w3.eth.max_priority_fee / 10**9
-        dynamic_max = (base_fee + priority_fee) * 1.05  # Margin 1.05x untuk Sepolia
+        priority_fee = max(w3.eth.max_priority_fee / 10**9, 0.1)  # Minimum 0.1 Gwei
+        dynamic_max = (base_fee + priority_fee) * 1.1  # Margin 1.1x untuk Sepolia
         # Batasi maksimum pada 5 Gwei untuk testnet Sepolia
         return min(dynamic_max, 5)
     except Exception as e:
         logger.warning(f"⚠️ Gagal menghitung max gas dinamis: {e}. Menggunakan default.")
-        return min(w3.eth.gas_price / 10**9 * 1.05, 5)  # Fallback realistis
+        return min(w3.eth.gas_price / 10**9 * 1.1, 5)  # Fallback realistis
 
 def get_gas_price(attempt=1, max_gas_price_gwei=None):
     """Menghitung harga gas dengan batas biaya transaksi."""
     try:
         base_fee = w3.eth.fee_history(1, "latest", reward_percentiles=[50])["baseFeePerGas"][-1] / 10**9
-        priority_fee = w3.eth.max_priority_fee / 10**9
-        multiplier = 1.05 + (attempt - 1) * 0.05  # Multiplier rendah untuk Sepolia
+        priority_fee = max(w3.eth.max_priority_fee / 10**9, 0.1)  # Minimum 0.1 Gwei
+        multiplier = 1.1 + (attempt - 1) * 0.1  # Multiplier rendah untuk Sepolia
         gas_price = (base_fee + priority_fee) * multiplier
         effective_max = max_gas_price_gwei if max_gas_price_gwei > 0 else get_dynamic_max_gas_price()
         # Pastikan biaya transaksi tidak melebihi MAX_TX_FEE_ETH
         max_gas_price_from_fee = (MAX_TX_FEE_ETH * 10**18) / 65000 / 10**9  # Gas limit 65,000
+        logger.info(f"Menghitung harga gas: base_fee={base_fee:.2f}, priority_fee={priority_fee:.2f}, multiplier={multiplier:.2f}, gas_price={gas_price:.2f}, effective_max={effective_max:.2f}")
         return min(gas_price, effective_max, max_gas_price_from_fee)
     except Exception as e:
         logger.warning(f"⚠️ Gagal mengambil harga gas: {e}. Menggunakan default.")
         default_gas_price = w3.eth.gas_price / 10**9
         effective_max = max_gas_price_gwei if max_gas_price_gwei > 0 else get_dynamic_max_gas_price()
-        return min(default_gas_price * 1.05, effective_max, 5)
+        return min(default_gas_price * 1.1, effective_max, 5)
 
 def get_next_nonce():
     with nonce_lock:
@@ -180,7 +181,7 @@ def display_initial_status():
         sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
         gas_price = get_gas_price(max_gas_price_gwei=MAX_GAS_PRICE_GWEI)
         eth_balance = w3.eth.get_balance(SENDER_ADDRESS) / 10**18
-        estimated_gas_cost = (65000 * w3.to_wei(gas_price, 'gwei')) / 10**18  # Update ke 65,000
+        estimated_gas_cost = (65000 * w3.to_wei(gas_price, 'gwei')) / 10**18  # Gas limit 65,000
         dynamic_max = get_dynamic_max_gas_price()
         
         table = Table(title="Status Awal", box=box.ROUNDED, style="cyan")
@@ -230,7 +231,7 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
 
         eth_balance = w3.eth.get_balance(SENDER_ADDRESS) / 10**18
         gas_price = get_gas_price(max_gas_price_gwei=MAX_GAS_PRICE_GWEI)
-        estimated_gas_cost = (65000 * w3.to_wei(gas_price, 'gwei')) / 10**18  # Update ke 65,000
+        estimated_gas_cost = (65000 * w3.to_wei(gas_price, 'gwei')) / 10**18  # Gas limit 65,000
         if eth_balance < estimated_gas_cost:
             logger.error(f"❌ Saldo ETH tidak cukup untuk gas: {eth_balance} < {estimated_gas_cost} ETH")
             console.print(f"[red]❌ Saldo ETH tidak cukup untuk gas: {eth_balance} < {estimated_gas_cost} ETH[/red]")
@@ -251,7 +252,7 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
                 tx = token_contract.functions.transfer(receiver, token_amount).build_transaction({
                     'from': SENDER_ADDRESS,
                     'nonce': nonce,
-                    'gas': 65000,  # Update ke 65,000
+                    'gas': 65000,  # Gas limit 65,000
                     'gasPrice': w3.to_wei(gas_price, 'gwei'),
                     'chainId': w3.eth.chain_id
                 })
@@ -282,6 +283,7 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
                             logf.write(f"{datetime.now(JAKARTA_TZ)} | {receiver} | {amount} | {tx_hash.hex()} | Gas Used: {receipt.gasUsed}\n")
                     return amount
                 else:
+                    logger.error(f"❌ Transaksi gagal untuk {receiver}: status != 1")
                     raise Exception("Transaksi gagal (status != 1)")
 
             except Web3RPCError as e:
@@ -295,12 +297,38 @@ def send_worker(receiver, get_next_nonce_func, max_retries=3):
                     logger.error(f"❌ Biaya gas terlalu tinggi untuk node. Membatalkan percobaan.")
                     return 0
                 if "capacity exceeded" in error_msg and attempt < max_retries:
+                    logger.warning(f"⚠️ Kapasitas node penuh. Menunggu sebelum mencoba lagi ({attempt}/{max_retries})")
                     time.sleep(2 * attempt)
                     continue
                 if attempt == max_retries:
                     logger.error(f"❌ Gagal mengirim ke {receiver} setelah {max_retries} percobaan")
                     cancel_transaction(nonce)
-                    refreshავ
+                    refresh_nonce()
+                    return 0
+                return 0
+            except TransactionNotFound:
+                logger.error(f"❌ Transaksi ke {receiver} tidak ditemukan di chain pada percobaan {attempt}")
+                console.print(f"[red]❌ Transaksi ke {receiver} tidak ditemukan di chain pada percobaan {attempt}[/red]")
+                cancel_transaction(nonce)
+                if attempt == max_retries:
+                    return 0
+                continue
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}")
+                console.print(f"[red]❌ Percobaan {attempt} gagal mengirim ke {receiver}: {error_msg}[/red]")
+
+                if "nonce too low" in error_msg or "replacement transaction underpriced" in error_msg:
+                    logger.info(f"⚠️ Nonce terlalu rendah atau transaksi diganti. Merefresh nonce.")
+                    refresh_nonce()
+                    continue
+                if attempt == max_retries:
+                    logger.error(f"❌ Gagal mengirim ke {receiver} setelah {max_retries} percobaan")
+                    cancel_transaction(nonce)
+                    refresh_nonce()
+                    return 0
+                time.sleep(3)
+        return 0
 
 def check_daily_quota():
     today = datetime.now(JAKARTA_TZ).date()
@@ -428,6 +456,9 @@ if __name__ == "__main__":
                 for future in as_completed(futures):
                     try:
                         sent = future.result()
+                        if sent is None:
+                            logger.error(f"❌ Nilai pengembalian dari send_worker adalah None untuk receiver")
+                            sent = 0
                         total_sent += sent
                         sender_balance = token_contract.functions.balanceOf(SENDER_ADDRESS).call() / (10 ** TOKEN_DECIMALS)
                         logger.info(f"Progres sementara: Total token dikirim = {total_sent} | Saldo pengirim tersisa: {sender_balance} token")
