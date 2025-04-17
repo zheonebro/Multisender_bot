@@ -37,7 +37,7 @@ SENDER_ADDRESS = Web3.to_checksum_address(os.getenv("SENDER_ADDRESS"))
 RPC_URL = os.getenv("INFURA_URL")
 TOKEN_CONTRACT_ADDRESS = Web3.to_checksum_address(os.getenv("TOKEN_CONTRACT"))
 MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "0"))  # 0 berarti gunakan dinamis
-MAX_TX_FEE_ETH = 1.0  # Batas biaya transaksi maksimum (dalam ETH)
+MAX_TX_FEE_ETH = 0.1  # Batas biaya transaksi maksimum (dalam ETH)
 
 MIN_TOKEN_AMOUNT = 10.0
 MAX_TOKEN_AMOUNT = 50.0
